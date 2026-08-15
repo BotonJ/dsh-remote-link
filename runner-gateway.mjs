@@ -7,6 +7,7 @@ import { apply } from '~/dsh-remote-link/src/index.js'
 const publicUrl = process.argv[2] ?? ''
 const port = Number(process.argv[3] ?? 3081)
 const targetPort = Number(process.argv[4] ?? 49152)
+const host = process.argv[5] ?? '127.0.0.1'
 
 const logs = []
 const origLog = console.log
@@ -21,7 +22,7 @@ const ctx = {
 }
 
 apply(ctx, {
-  host: '127.0.0.1',
+  host,
   port,
   mdns: false,
   publicUrl: publicUrl || undefined,
