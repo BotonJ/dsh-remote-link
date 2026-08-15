@@ -26,7 +26,7 @@ test('remote_qr mints a fresh pairing with URL, short code, and expiry evidence'
   assert.equal(tool.name, 'remote_qr')
   const result = await tool.execute({}, { token: 't' })
   assert.equal(result.ok, true)
-  assert.match(result.url, /^http:\/\/192\.168\.31\.9:3081\/pair#p=[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/)
+  assert.match(result.url, /^http:\/\/192\.168\.1\.23:3081\/pair#p=[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/)
   assert.match(result.shortCode, /^\d{6}$/)
   assert.equal(result.expiresAt, 1_300_000)
   assert.equal(result.secondsLeft, 300)
