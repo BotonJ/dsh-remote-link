@@ -19,6 +19,11 @@ function forwardedHeaders(req, target) {
     .split(',').map((token) => token.trim().toLowerCase())
   for (const header of [...HOP_BY_HOP, ...connectionTokens]) delete headers[header]
   headers.host = `${target.host}:${target.port}`
+  // The backend enforces same-origin on RPC POSTs (CSRF fence): rewrite Host
+  // alone is not enough — the browser's Origin/Referer still name the public
+  // URL and the call 403s. Strip both so the upstream sees an own-origin call.
+  delete headers.origin
+  delete headers.referer
   return headers
 }
 
