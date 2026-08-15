@@ -202,6 +202,15 @@ h1{font-size:18px;font-weight:600}img{width:min(70vmin,520px);image-rendering:pi
 <body><h1>DSH Remote Link — 手机扫码配对</h1>
 <img src="/qr.png" alt="配对二维码">
 <div class="short">${shortCode}</div>
-<small>短码备用 · 本配对 ${secondsLeft}s 内有效 · 页面每 60s 自动刷新（同码续期，过期自动换新）</small>
+<small>短码备用 · 本配对 <span id="ttl">${secondsLeft}</span>s 内有效 · 到期自动换新码</small>
+<script>
+let s = ${secondsLeft}
+setInterval(() => {
+  s -= 1
+  const el = document.getElementById('ttl')
+  if (el) el.textContent = Math.max(0, s)
+  if (s <= 0) location.reload()
+}, 1000)
+</script>
 </body></html>`
 }
