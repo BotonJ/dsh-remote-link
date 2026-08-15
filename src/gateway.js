@@ -57,7 +57,7 @@ function readBody(req, limitBytes) {
 export function createGateway({
   auth, limiter, failureBan, target, log = () => {},
   pairing = null, pairingPage = '', pairLimiter = null, cookieMaxAgeSeconds = 30 * 86_400,
-  qrImage = null,
+  qrImage = null, qrPage = null,
 }) {
   const sockets = new Set()
   let server = null
@@ -66,17 +66,25 @@ export function createGateway({
   function handlePairingRoute(req, res) {
     if (pairing === null) return false
     const path = req.url.split('?', 1)[0]
-    if (path !== '/pair' && path !== '/pair/' && path !== '/pair/challenge' && path !== '/pair/verify' && path !== '/qr.png') return false
+    if (path !== '/pair' && path !== '/pair/' && path !== '/pair/challenge' && path !== '/pair/verify' && path !== '/qr.png' && path !== '/qr') return false
 
     // /qr.png exposes the LIVE pairing image — desktop chat only. Loopback
     // source AND no proxy chain: localtunnel forwards arrive on loopback
     // sockets but carry x-forwarded-for, so tunnelled requests never see it.
-    if (path === '/qr.png') {
+    if (path === '/qr.png' || path === '/qr') {
       const viaLoopback = LOOPBACK.test(clientIp(req))
       const viaProxy = req.headers['x-forwarded-for'] !== undefined
       if (!viaLoopback || viaProxy || typeof qrImage !== 'function') {
         plainResponse(res, 403, {}, 'forbidden')
         return true
+      }
+      if (path === '/qr' && typeof qrPage === 'function') {
+        const html = qrPage()
+        if (html !== null) {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(html)
+          return true
+        }
       }
       const png = qrImage()
       if (png === null) {

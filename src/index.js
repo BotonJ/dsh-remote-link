@@ -107,6 +107,13 @@ export function apply(ctx, config) {
           const pairing = currentOrMint()
           return renderPng(pairingUrl(pairing))
         },
+    qrPage: pairingService === null
+      ? null
+      : () => {
+          const pairing = currentOrMint()
+          const seconds = Math.max(0, Math.round((pairing.expiresAt - Date.now()) / 1000))
+          return QR_PAGE_HTML(pairingUrl(pairing), pairing.shortCode, seconds)
+        },
   })
 
   ctx.tools.register(defineForkSessionTool(ctx))
@@ -180,4 +187,21 @@ export function apply(ctx, config) {
     gateway.close()
     advertiser?.stop()
   })
+}
+
+
+/** Loopback-only QR viewer page: `open http://127.0.0.1:<port>/qr` puts a
+ *  scannable image on the desktop screen — the phone scans the monitor. */
+function QR_PAGE_HTML(url, shortCode, secondsLeft) {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DSH Remote Link 配对</title>
+<meta http-equiv="refresh" content="60">
+<style>body{margin:0;display:flex;flex-direction:column;align-items:center;background:#111;color:#eee;font-family:system-ui;padding:24px}
+h1{font-size:18px;font-weight:600}img{width:min(70vmin,520px);image-rendering:pixelated}
+.short{font-size:28px;letter-spacing:8px;margin:16px 0 4px}small{color:#888}</style></head>
+<body><h1>DSH Remote Link — 手机扫码配对</h1>
+<img src="/qr.png" alt="配对二维码">
+<div class="short">${shortCode}</div>
+<small>短码备用 · 本配对 ${secondsLeft}s 内有效 · 页面每 60s 自动刷新（同码续期，过期自动换新）</small>
+</body></html>`
 }
