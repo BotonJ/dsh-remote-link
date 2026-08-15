@@ -1,5 +1,7 @@
 # dsh-remote-link
 
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
+
 把 DeepSeek Harness（DSH）的官方 Web UI **安全地**暴露到局域网——手机扫码即遥控电脑上的 agent——并给模型增加 `fork_session` 会话分叉工具。零核心改动、零运行时依赖。
 
 **v1.5：QR 一次性配对 + HMAC 挑战-响应 + HttpOnly Cookie 会话 + 设备注册表**（v1 的 `?token=` 明文折衷已删除，设计见 `docs/PAIRING-DESIGN.md`）。
