@@ -2,11 +2,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { normalizeConfig } from '../src/config.js'
 
-test('refuses default non-loopback bind without a password (security baseline)', () => {
-  assert.throws(
-    () => normalizeConfig({}),
-    { code: 'E_NO_PASSWORD' },
-  )
+test('default non-loopback bind without a password is allowed because pairing is on (v1.5)', () => {
+  const cfg = normalizeConfig({})
+  assert.equal(cfg.pairing.enabled, true)
+  assert.equal(cfg.password, '')
 })
 
 test('loopback bind without a password is allowed', () => {
@@ -58,4 +57,20 @@ test('rejects invalid hosts and non-string credentials', () => {
   assert.throws(() => normalizeConfig({ host: 123, password: 'x' }), { code: 'E_CONFIG' })
   assert.throws(() => normalizeConfig({ password: 123 }), { code: 'E_CONFIG' })
   assert.throws(() => normalizeConfig({ password: 'x', username: 5 }), { code: 'E_CONFIG' })
+})
+
+test('pairing defaults: enabled, 5min TTL, 30d sessions, 90d device idle expiry', () => {
+  const cfg = normalizeConfig({ password: 'x' })
+  assert.deepEqual(cfg.pairing, { enabled: true, ttlMs: 300_000, sessionMaxAgeDays: 30, deviceIdleExpiryDays: 90, devicesFile: null })
+  const custom = normalizeConfig({ password: 'x', pairing: { enabled: false, ttlMs: 60_000 } })
+  assert.deepEqual(custom.pairing, { enabled: false, ttlMs: 60_000, sessionMaxAgeDays: 30, deviceIdleExpiryDays: 90, devicesFile: null })
+  assert.throws(() => normalizeConfig({ password: 'x', pairing: { ttlMs: 0 } }), { code: 'E_CONFIG' })
+  assert.throws(() => normalizeConfig({ password: 'x', pairing: { bogus: 1 } }), { code: 'E_CONFIG' })
+})
+
+test('security baseline passes on non-loopback with pairing enabled and no password', () => {
+  const cfg = normalizeConfig({ host: '0.0.0.0', pairing: { enabled: true } })
+  assert.equal(cfg.password, '')
+  // pairing disabled restores the v1 rule: non-loopback needs a password
+  assert.throws(() => normalizeConfig({ host: '0.0.0.0', pairing: { enabled: false } }), { code: 'E_NO_PASSWORD' })
 })

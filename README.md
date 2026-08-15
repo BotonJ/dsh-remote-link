@@ -1,11 +1,15 @@
 # dsh-remote-link
 
-把 DeepSeek Harness（DSH）的官方 Web UI **安全地**暴露到局域网——手机打开浏览器即可遥控电脑上的 agent——并给模型增加一个 `fork_session` 会话分叉工具。零核心改动、零运行时依赖。
+把 DeepSeek Harness（DSH）的官方 Web UI **安全地**暴露到局域网——手机扫码即遥控电脑上的 agent——并给模型增加 `fork_session` 会话分叉工具。零核心改动、零运行时依赖。
+
+**v1.5：QR 一次性配对 + HMAC 挑战-响应 + HttpOnly Cookie 会话 + 设备注册表**（v1 的 `?token=` 明文折衷已删除，设计见 `docs/PAIRING-DESIGN.md`）。
 
 ```
-手机/平板 ──Basic Auth──▶ 认证网关(0.0.0.0:3081) ──反代──▶ DSH webserver(127.0.0.1:随机)
-                              │  官方前端静态 / /api RPC / /api/events.* WS
-                              └─ mDNS 广播 "DSH Remote Link on <Mac>"
+手机扫码(#p=sid.secret, secret 留在 fragment)
+   → GET /pair/challenge?sid  → {nonce, ts}
+   → proof = HMAC(secret, sid|nonce|ts)
+   → POST /pair/verify        → Set-Cookie rls=<token> (HttpOnly, SameSite=Strict, 30d)
+   → 官方 UI / /api RPC / WS 事件流全部走 cookie，无密码无弹窗
 ```
 
 ## 为什么这样设计
@@ -25,15 +29,25 @@ dsh plugin --profile web add ./dsh-remote-link     # 本地目录
 
 | 配置 | 默认 | 说明 |
 |---|---|---|
-| `host` | `0.0.0.0` | 网关绑定地址；非 loopback 时**必须**设置 `password`，否则拒绝加载 |
+| `host` | `0.0.0.0` | 网关绑定地址 |
 | `port` | `3081` | 网关端口；`0` 为系统随机分配 |
-| `username` / `password` | `dsh` / 无 | Basic Auth 凭据 |
+| `username` / `password` | `dsh` / 空 | Basic Auth 后备（curl/桌面浏览器便利）；配对启用时可留空 |
+| `pairing.enabled` | `true` | QR/短码配对 + cookie 会话；关闭后非 loopback 必须设 `password` |
+| `pairing.ttlMs` | `300000` | 配对秘密有效期（5 分钟、一次性） |
+| `pairing.sessionMaxAgeDays` | `30` | cookie 会话最长寿命 |
+| `pairing.deviceIdleExpiryDays` | `90` | 设备闲置自动出局 |
+| `pairing.devicesFile` | `$DSH_HOME/remote-link/devices.json` | 设备注册表（0600） |
 | `targetHost` / `targetPort` | `127.0.0.1` / 自动 | 反代目标；默认取宿主 webserver 实际端口 |
-| `mdns` | `true` | 非 loopback 绑定时在局域网广播 `_http._tcp` 服务（含 TXT `auth=basic`） |
+| `mdns` | `true` | 非 loopback 绑定时广播 `_http._tcp`（TXT 标注 `auth=pairing|basic`） |
 | `rateLimit` | 60s 300 次 | 每客户端 IP 固定窗口限速 |
-| `authFailure` | 5min 10 次失败→封禁 5min | 暴力破解阻尼 |
+| `authFailure` | 5min 10 次失败→封禁 5min | 暴力破解阻尼（配对端点另有独立 10/min 桶） |
 
-启动后访问 `http://<局域网IP>:3081`（浏览器弹 Basic Auth），或在手机上直接输入 `http://dsh:<password>@<局域网IP>:3081`。
+启动日志直接打印**一次性配对二维码**（ASCII）+ 6 位短码。手机扫码 → 官方 UI 无弹窗打开；扫不了码就在任意设备打开 `http://<IP>:3081/pair` 输短码。
+
+## 管理工具（聊天框即面板）
+
+- **`remote_qr`**：铸新的一次性配对（QR URL + ASCII 图 + 短码 + 剩余有效期）——"给我配对码"。
+- **`remote_devices`**：`list / revoke <名称或ID> / revoke-all`——"看看谁连过我 / 踢掉我的旧 iPad"；吊销后会话立即失效。
 
 ## fork_session 工具
 
@@ -41,25 +55,30 @@ dsh plugin --profile web add ./dsh-remote-link     # 本地目录
 
 ## 安全边界
 
-- 非 loopback 绑定无密码 → **拒绝加载**（与 MiMo server 同款底线）。
-- 凭据比较经 SHA-256 摘要后 `timingSafeEqual`（常时比较，不泄露长度）。
-- Host 头重写为 loopback 以通过 DSH 信任围栏——这意味着 `settings.*`、`credentials.*` 等特权 RPC **在通过 Basic Auth 后远程可达**：网关的认证就是唯一信任边界，请使用强密码。
-- `?token=` 会出现在服务端访问日志/浏览器历史中，属已知折衷（v1.5 的 QR+HMAC 配对将消除）。
+- 非 loopback 绑定且既无密码又关闭配对 → **拒绝加载**。
+- 配对秘密 5 分钟一次性；QR 里的 secret 只存在于 URL fragment，**永不发给服务器**；proof 是 HMAC，nonce 单次有效（每次尝试即作废）+ ±300s 时间窗 + 常时比较。
+- 会话 cookie：HttpOnly + SameSite=Strict，服务端只存 SHA-256 摘要；吊销设备即刻断线。
+- 短码路径以 6 位码为弱共享秘密（20 bit），由独立 10/min 限速桶 + v1 封禁窗 + 5 分钟一次性 TTL 约束，单次配对窗口内猜中概率 ~10⁻⁵。设计稿原定"sid 数字投影"会随 sid 泄漏而可推导，已改为 HMAC 派生（安全修正）。
+- **已知未解决（HTTP 天花板）**：LAN 嗅探者可复制 cookie 接管会话；`devices.json` 内含 deviceKey 明文（0600，与进程同权限）。v2 TLS relay 落地后自动收紧。
+- Host 头重写为 loopback 以通过 DSH 信任围栏——`settings.*`、`credentials.*` 等特权 RPC 在通过网关认证后可达：网关认证是唯一信任边界。
 - 认证失败独立计数，超限封禁（429 + Retry-After）。
 
 ## 开发
 
 ```sh
-node --test test/*.test.js          # 53 项测试（单元 + 真实 socket 集成）
-dsh web --patch overlay.yml --port 0  # 真实冒烟（见 test 断言的场景）
+node --test test/*.test.js            # 85 项（单元 + 真实 socket 集成 + 配对协议正反路径）
+dsh web --patch overlay.yml --port 0  # 真机冒烟：/pair 页 → challenge → verify → cookie → UI/RPC
+node scripts/vision-decode.mjs "..."  # 可选：macOS Vision 真扫一遍自产的 QR（需 swift）
 ```
 
-零依赖（`node:test` + Node 内置模块）。mDNS 响应器为手写 DNS 编解码（`src/dns-codec.js`），已通过 macOS `dns-sd` 浏览与组播 SRV/TXT/A 解析实测。
+零依赖。mDNS 响应器（`src/dns-codec.js`）与 QR 编码器（`src/qrcode.js`，RS+8 掩码罚分）均为手写实现；内嵌配对页的纯 JS HMAC-SHA256 与 `node:crypto` 全量交叉验证一致。
 
-**sentinel 发布自扫**：tarball 判定 `review`（6 分）——`gateway.js`/`proxy.js`/`mdns.js` 三个 `JS-IMPORT-NET` medium 即插件本职（认证网关），无 critical/high、无运行时依赖、无生命周期脚本。网络能力全部为**入站监听 + 指向 loopback webserver 的反代**，无任何外联地址。
+**sentinel 发布自扫**：tarball 判定 `review`（6 分）——三个 `JS-IMPORT-NET` medium 即插件本职（认证网关），无 critical/high、无运行时依赖、无生命周期脚本。
 
-## 路线图（v1.5+）
+**windtunnel**：`remote-link-pairing-happy` 用例绿（3/3 断言 + 17/17 L1 契约）；另三例（坏输入/新配对/headless 挂载）卡在 windtunnel headless 权限流语义（`permission/preset` 后无 `tool/result`），非插件侧问题，留待风洞侧跟进。
 
-- QR + HMAC 配对（替代 URL 明文 token）
+## 路线图（v2）
+
+- TLS relay 模式（tailscale serve / relay 域名）+ `Secure` cookie + AEAD
 - 官方前端 client module 注入（`dsh.client` 声明 + `window.__ModuleLoader__.load()`）
-- 中继/外网穿透（AEAD）
+- approval 推送、成本面板、按设备能力分级

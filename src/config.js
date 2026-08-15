@@ -62,12 +62,19 @@ export function normalizeConfig(raw) {
   const mdns = input.mdns === undefined ? true : input.mdns
   if (typeof mdns !== 'boolean') throw new ConfigError('config.mdns must be a boolean')
 
+  const pairing = section(input.pairing, { enabled: true, ttlMs: 300_000, sessionMaxAgeDays: 30, deviceIdleExpiryDays: 90, devicesFile: null }, ['ttlMs', 'sessionMaxAgeDays', 'deviceIdleExpiryDays'])
+  if (typeof pairing.enabled !== 'boolean') throw new ConfigError('config.pairing.enabled must be a boolean')
+  if (pairing.devicesFile !== null && typeof pairing.devicesFile !== 'string') {
+    throw new ConfigError('config.pairing.devicesFile must be a string path or null')
+  }
+
   // Security baseline: the gateway proxies a full remote-control surface, so
-  // binding it beyond loopback without credentials would expose the harness to
-  // the whole LAN. Refuse loudly instead (same stance as MiMo's server).
-  if (!LOOPBACK_HOSTS.has(host) && password.length === 0) {
+  // binding it beyond loopback with no way to authenticate would expose the
+  // harness to the whole LAN. v1.5 accepts either a Basic password or the
+  // pairing flow (one-time QR/short-code → device cookie sessions).
+  if (!LOOPBACK_HOSTS.has(host) && password.length === 0 && !pairing.enabled) {
     throw new ConfigError(
-      `refusing to bind gateway to ${host} without a password — set config.password`,
+      `refusing to bind gateway to ${host} without a password or pairing — set config.password or pairing.enabled`,
       'E_NO_PASSWORD',
     )
   }
@@ -87,5 +94,6 @@ export function normalizeConfig(raw) {
     target: Object.freeze(target),
     rateLimit: Object.freeze(section(input.rateLimit, { windowMs: 60_000, max: 300 }, ['windowMs', 'max'])),
     authFailure: Object.freeze(section(input.authFailure, { windowMs: 300_000, max: 10, banMs: 300_000 }, ['windowMs', 'max', 'banMs'])),
+    pairing: Object.freeze(pairing),
   })
 }

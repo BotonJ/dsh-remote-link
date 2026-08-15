@@ -4,6 +4,7 @@
  * the /api/events.* WebSocket upgrades).
  *
  * Request path per client IP:
+ *   /pair*                    → pairing endpoints (own tight rate budget)
  *   banned (auth brute-force) → 429
  *   over rate budget          → 429
  *   failed credentials        → 401 (+ failure counter)
@@ -14,6 +15,7 @@
 
 import { createServer } from 'node:http'
 import { proxyRequest, proxyUpgrade } from './proxy.js'
+import { SESSION_COOKIE } from './auth.js'
 
 const REALM = 'dsh-remote-link'
 
@@ -27,14 +29,77 @@ function plainResponse(res, status, headers, body) {
   res.end(body)
 }
 
+function jsonResponse(res, status, body, headers = {}) {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...headers })
+  res.end(JSON.stringify(body))
+}
+
 function socketResponse(socket, status, reason, headers = {}) {
   const headerBlock = Object.entries(headers).map(([name, value]) => `${name}: ${value}\r\n`).join('')
   socket.end(`HTTP/1.1 ${status} ${reason}\r\n${headerBlock}Connection: close\r\n\r\n`)
 }
 
-export function createGateway({ auth, limiter, failureBan, target, log = () => {} }) {
+function readBody(req, limitBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let size = 0
+    req.on('data', (chunk) => {
+      size += chunk.length
+      if (size > limitBytes) { reject(new Error('body too large')); req.destroy(); return }
+      chunks.push(chunk)
+    })
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+    req.on('error', reject)
+  })
+}
+
+export function createGateway({
+  auth, limiter, failureBan, target, log = () => {},
+  pairing = null, pairingPage = '', pairLimiter = null, cookieMaxAgeSeconds = 30 * 86_400,
+}) {
   const sockets = new Set()
   let server = null
+
+  /** Returns true when the request was a pairing endpoint and is fully handled. */
+  function handlePairingRoute(req, res) {
+    if (pairing === null) return false
+    const path = req.url.split('?', 1)[0]
+    if (path !== '/pair' && path !== '/pair/' && path !== '/pair/challenge' && path !== '/pair/verify') return false
+
+    const budget = pairLimiter.check(clientIp(req))
+    if (!budget.allowed) {
+      plainResponse(res, 429, { 'retry-after': String(Math.max(1, Math.ceil(budget.retryAfterMs / 1000))) }, 'slow down')
+      return true
+    }
+
+    if (path === '/pair' || path === '/pair/') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(pairingPage)
+      return true
+    }
+    if (path === '/pair/challenge') {
+      const query = new URL(req.url, 'http://pairing.local').searchParams
+      const sidOrCode = query.get('sid') ?? query.get('code')
+      const challenge = sidOrCode !== null && sidOrCode.length > 0 ? pairing.challenge(sidOrCode) : null
+      jsonResponse(res, challenge === null ? 404 : 200, challenge ?? { error: 'PAIRING_NOT_FOUND' })
+      return true
+    }
+    // /pair/verify
+    readBody(req, 4096)
+      .then((text) => {
+        let body = null
+        try { body = JSON.parse(text) } catch { /* handled below */ }
+        if (body === null || typeof body !== 'object') return jsonResponse(res, 400, { error: 'BAD_REQUEST' })
+        return pairing.verify(body).then((result) => {
+          if (result.ok !== true) return jsonResponse(res, 401, { error: result.error })
+          jsonResponse(res, 200, { deviceId: result.deviceId }, {
+            'set-cookie': `${SESSION_COOKIE}=${result.sessionToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${cookieMaxAgeSeconds}`,
+          })
+        })
+      })
+      .catch(() => jsonResponse(res, 400, { error: 'BAD_REQUEST' }))
+    return true
+  }
 
   function gate(req) {
     const ip = clientIp(req)
@@ -52,12 +117,16 @@ export function createGateway({ auth, limiter, failureBan, target, log = () => {
   }
 
   function onRequest(req, res) {
+    if (handlePairingRoute(req, res)) return
     const decision = gate(req)
     if (!decision.allowed) {
       if (decision.status === 429) {
         return plainResponse(res, 429, { 'retry-after': String(Math.max(1, Math.ceil(decision.retryAfterMs / 1000))) }, 'slow down')
       }
-      return plainResponse(res, 401, { 'www-authenticate': `Basic realm="${REALM}"` }, 'unauthorized')
+      // Only advertise Basic when it is actually enabled; cookie-only mode
+      // must not pop a browser auth dialog.
+      const challenge = auth.basicEnabled ? { 'www-authenticate': `Basic realm="${REALM}"` } : {}
+      return plainResponse(res, 401, challenge, 'unauthorized')
     }
     proxyRequest(req, res, target(), (error) => log(`gateway: proxy error: ${String(error?.message ?? error)}`))
   }

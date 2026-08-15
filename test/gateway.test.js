@@ -2,7 +2,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { connect as tcpConnect } from 'node:net'
+import { createHmac } from 'node:crypto'
 import { createGateway } from '../src/gateway.js'
+import { createPairingService } from '../src/pairing.js'
+import { PAIRING_PAGE_HTML } from '../src/pairing-page.js'
 
 function startUpstream() {
   const seen = []
@@ -33,15 +36,45 @@ function startUpstream() {
 }
 
 function startGateway(upstream, overrides = {}) {
+  const pairing = overrides.pairing ?? null
   const gateway = createGateway({
-    auth: overrides.auth ?? authWith({ username: 'dsh', password: 's3cret' }),
+    auth: overrides.auth ?? authWith({
+      username: 'dsh', password: 's3cret',
+      cookieAuth: pairing !== null,
+      resolveSession: pairing === null ? () => null : (token) => pairing.resolveSession(token),
+    }),
     limiter: overrides.limiter ?? limiterWith({ windowMs: 60_000, max: 1000 }),
     failureBan: overrides.failureBan ?? banWith({ windowMs: 60_000, max: 1000, banMs: 60_000 }),
     target: () => ({ host: '127.0.0.1', port: upstream.port }),
     log: () => {},
+    pairing,
+    pairingPage: PAIRING_PAGE_HTML,
+    pairLimiter: overrides.pairLimiter ?? limiterWith({ windowMs: 60_000, max: 1000 }),
+    cookieMaxAgeSeconds: 30 * 86_400,
     ...overrides.gateway,
   })
   return gateway.listen({ host: '127.0.0.1', port: 0 }).then(() => gateway)
+}
+
+function pairingService() {
+  const store = { load: () => [], save() {} }
+  return createPairingService({ store, ttlMs: 300_000 })
+}
+
+const proofFor = (secret, sid, nonce, ts) =>
+  createHmac('sha256', Buffer.from(secret, 'utf8')).update(`${sid}|${nonce}|${ts}`, 'utf8').digest('hex')
+
+async function completePairing(gateway, service) {
+  const p = service.createPairing()
+  const challenge = await (await fetch(`http://127.0.0.1:${gateway.port}/pair/challenge?sid=${encodeURIComponent(p.sid)}`)).json()
+  const proof = proofFor(p.secret, challenge.sid, challenge.nonce, challenge.ts)
+  return {
+    p,
+    verify: await fetch(`http://127.0.0.1:${gateway.port}/pair/verify`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sid: challenge.sid, ts: challenge.ts, proof }),
+    }),
+  }
 }
 
 // tiny local factories so the integration tests do not depend on unit-test doubles
@@ -69,13 +102,84 @@ test('unauthenticated requests get 401 with a Basic challenge; credentials pass 
   }
 })
 
-test('token query param authenticates (WS/EventSource path)', async () => {
+test('GET /pair serves the pairing page without authentication', async () => {
   const upstream = await startUpstream()
-  const gw = await startGateway(upstream)
+  const service = pairingService()
+  const gw = await startGateway(upstream, { pairing: service })
   try {
-    const res = await fetch(`http://127.0.0.1:${gw.port}/api/events.mux?token=s3cret`)
+    const res = await fetch(`http://127.0.0.1:${gw.port}/pair`)
     assert.equal(res.status, 200)
-    assert.deepEqual((await res.json()).path, '/api/events.mux?token=s3cret')
+    assert.match(res.headers.get('content-type'), /text\/html/)
+    assert.match(await res.text(), /DSH Remote Link 配对/)
+  } finally {
+    await Promise.all([gw.close(), closeServer(upstream)])
+  }
+})
+
+test('full pairing flow: challenge → proof → HttpOnly cookie → official UI without Basic', async () => {
+  const upstream = await startUpstream()
+  const service = pairingService()
+  const gw = await startGateway(upstream, { pairing: service })
+  try {
+    const { verify } = await completePairing(gw, service)
+    assert.equal(verify.status, 200)
+    const setCookie = verify.headers.get('set-cookie')
+    assert.match(setCookie, /rls=/)
+    assert.match(setCookie, /HttpOnly/)
+    assert.match(setCookie, /SameSite=Strict/)
+    assert.match(setCookie, /Max-Age=2592000/)
+    const body = await verify.json()
+    assert.ok(body.deviceId)
+
+    const cookie = setCookie.split(';')[0]
+    const ui = await fetch(`http://127.0.0.1:${gw.port}/`, { headers: { cookie } })
+    assert.equal(ui.status, 200)
+    assert.equal(await ui.text(), '<html>official ui</html>')
+  } finally {
+    await Promise.all([gw.close(), closeServer(upstream)])
+  }
+})
+
+test('WebSocket upgrade rides the pairing cookie', async () => {
+  const upstream = await startUpstream()
+  const service = pairingService()
+  const gw = await startGateway(upstream, { pairing: service })
+  try {
+    const { verify } = await completePairing(gw, service)
+    const cookie = verify.headers.get('set-cookie').split(';')[0]
+    const upgraded = await rawUpgrade(gw.port, '/api/events.mux', { cookie })
+    assert.match(upgraded.statusLine, /101/)
+    upgraded.socket.destroy()
+  } finally {
+    await Promise.all([gw.close(), closeServer(upstream)])
+  }
+})
+
+test('bad proof is rejected without a cookie; pairing endpoints have their own budget', async () => {
+  const upstream = await startUpstream()
+  const service = pairingService()
+  const gw = await startGateway(upstream, { pairing: service, pairLimiter: limiterWith({ windowMs: 60_000, max: 3 }) })
+  try {
+    const p = service.createPairing()
+    const challenge = await (await fetch(`http://127.0.0.1:${gw.port}/pair/challenge?sid=${encodeURIComponent(p.sid)}`)).json()
+    const bad = await fetch(`http://127.0.0.1:${gw.port}/pair/verify`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sid: challenge.sid, ts: challenge.ts, proof: '00'.repeat(32) }),
+    })
+    assert.equal(bad.status, 401)
+    assert.equal(bad.headers.get('set-cookie'), null)
+
+    // independent bucket: challenge + verify + page count 3, the 4th pairing hit is limited
+    const unknown = await fetch(`http://127.0.0.1:${gw.port}/pair/challenge?sid=nope`)
+    assert.equal(unknown.status, 404)
+    for (let i = 0; i < 2; i += 1) {
+      await fetch(`http://127.0.0.1:${gw.port}/pair/challenge?sid=nope`)
+    }
+    const limited = await fetch(`http://127.0.0.1:${gw.port}/pair/challenge?sid=nope`)
+    assert.equal(limited.status, 429)
+    // …while normal traffic through the main gate is unaffected
+    const ok = await fetch(`http://127.0.0.1:${gw.port}/`, { headers: { authorization: basic('dsh', 's3cret') } })
+    assert.equal(ok.status, 200)
   } finally {
     await Promise.all([gw.close(), closeServer(upstream)])
   }
@@ -129,7 +233,7 @@ test('WebSocket upgrade is authenticated and piped bidirectionally', async () =>
     const denied = await rawUpgrade(gw.port, '/api/events.mux', {})
     assert.match(denied.statusLine, /401/)
 
-    const upgraded = await rawUpgrade(gw.port, '/api/events.mux?token=s3cret', {})
+    const upgraded = await rawUpgrade(gw.port, '/api/events.mux', { authorization: basic('dsh', 's3cret') })
     assert.match(upgraded.statusLine, /101/)
     upgraded.socket.write('ping-from-phone')
     const echoed = await upgraded.nextMessage()
@@ -220,7 +324,8 @@ function rawUpgrade(port, path, headers) {
       }
     })
     socket.on('connect', () => {
-      socket.write(`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`)
+      const extra = Object.entries(headers).map(([name, value]) => `${name}: ${value}\r\n`).join('')
+      socket.write(`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n${extra}Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`)
     })
   })
 }

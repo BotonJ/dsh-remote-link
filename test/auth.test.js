@@ -1,9 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createAuthenticator, safeEqual, parseBasicAuth, extractToken } from '../src/auth.js'
+import { createAuthenticator, safeEqual, parseBasicAuth, extractCookie } from '../src/auth.js'
 
-function req({ authorization, url = '/' } = {}) {
-  return { headers: authorization === undefined ? {} : { authorization }, url }
+function req({ authorization, url = '/', cookie } = {}) {
+  const headers = {}
+  if (authorization !== undefined) headers.authorization = authorization
+  if (cookie !== undefined) headers.cookie = cookie
+  return { headers, url }
 }
 
 test('safeEqual matches identical and rejects different strings at any length', () => {
@@ -23,11 +26,12 @@ test('parseBasicAuth decodes well-formed headers and rejects malformed ones', ()
   assert.equal(parseBasicAuth(undefined), null)
 })
 
-test('extractToken pulls the token query param from request URLs', () => {
-  assert.equal(extractToken('/api/events.mux?token=abc'), 'abc')
-  assert.equal(extractToken('/?a=1&token=x%20y'), 'x y')
-  assert.equal(extractToken('/plain'), null)
-  assert.equal(extractToken(''), null)
+test('extractCookie pulls the rls session cookie from a cookie header', () => {
+  assert.equal(extractCookie('rls=tok123'), 'tok123')
+  assert.equal(extractCookie('a=1; rls=tok123; b=2'), 'tok123')
+  assert.equal(extractCookie('other=tok123'), null)
+  assert.equal(extractCookie(undefined), null)
+  assert.equal(extractCookie(''), null)
 })
 
 test('no password configured: every request passes without auth', () => {
@@ -52,15 +56,38 @@ test('wrong password, wrong username, and missing header all fail', () => {
   assert.equal(auth.check(req({ authorization: b64('nocolon') })).ok, false)
 })
 
-test('token query param authenticates (browser WebSocket cannot set headers)', () => {
-  const auth = createAuthenticator({ username: 'dsh', password: 's3cret' })
-  assert.deepEqual(auth.check(req({ url: '/api/events.mux?token=s3cret' })), { ok: true, via: 'token' })
-  assert.equal(auth.check(req({ url: '/api/events.mux?token=wrong' })).ok, false)
-  assert.equal(auth.check(req({ url: '/api/events.mux?token=' })).ok, false)
+test('valid cookie session authenticates (browser WS/EventSource carrier)', () => {
+  const sessions = new Map([['good-token', { deviceId: 'dev-1' }]])
+  const auth = createAuthenticator({
+    username: 'dsh', password: 's3cret',
+    cookieAuth: true, resolveSession: (t) => sessions.get(t) ?? null,
+  })
+  assert.deepEqual(auth.check(req({ cookie: 'rls=good-token' })), { ok: true, via: 'cookie', deviceId: 'dev-1' })
+  assert.equal(auth.check(req({ cookie: 'rls=revoked' })).ok, false)
+  assert.equal(auth.check(req({})).ok, false)
 })
 
-test('Basic header takes precedence over token when both are present', () => {
-  const auth = createAuthenticator({ username: 'dsh', password: 's3cret' })
+test('Basic header takes precedence over a stale cookie', () => {
+  const auth = createAuthenticator({
+    username: 'dsh', password: 's3cret',
+    cookieAuth: true, resolveSession: () => null,
+  })
+  const good = `Basic ${Buffer.from('dsh:s3cret').toString('base64')}`
+  assert.deepEqual(auth.check(req({ authorization: good, cookie: 'rls=stale' })).via, 'basic')
   const bad = `Basic ${Buffer.from('dsh:wrong').toString('base64')}`
-  assert.equal(auth.check(req({ authorization: bad, url: '/?token=s3cret' })).ok, false)
+  assert.equal(auth.check(req({ authorization: bad, cookie: 'rls=stale' })).ok, false)
+})
+
+test('cookie-only mode: no password, pairing sessions carry the gate', () => {
+  const sessions = new Map([['tok', { deviceId: 'd' }]])
+  const auth = createAuthenticator({ username: 'dsh', password: '', cookieAuth: true, resolveSession: (t) => sessions.get(t) ?? null })
+  assert.equal(auth.required, true)
+  assert.equal(auth.basicEnabled, false)
+  assert.equal(auth.check(req({ cookie: 'rls=tok' })).ok, true)
+  assert.equal(auth.check(req({})).ok, false)
+})
+
+test('query token no longer authenticates (removed in v1.5)', () => {
+  const auth = createAuthenticator({ username: 'dsh', password: 's3cret' })
+  assert.equal(auth.check(req({ url: '/?token=s3cret' })).ok, false)
 })

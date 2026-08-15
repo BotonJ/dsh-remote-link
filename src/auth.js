@@ -1,16 +1,18 @@
 /**
- * Gateway authentication: HTTP Basic plus a `?token=` query bypass.
- *
- * The token bypass exists because the browser WebSocket and EventSource APIs
- * cannot set an Authorization header — the official web UI's event streams
- * (WS upgrades to /api/events.*) would be impossible to authorize from a phone
- * without it. MiMo's mobile server solves this the same way.
+ * Gateway authentication: Basic (curl/desktop convenience) plus HttpOnly
+ * cookie sessions issued by the v1.5 pairing flow. The cookie is what the
+ * official web UI's WebSocket/EventSource connections ride on — browsers
+ * attach cookies to WS upgrades automatically but cannot set Authorization
+ * headers there. The v1 `?token=` query bypass is gone (it leaked into
+ * logs and browser history; see docs/PAIRING-DESIGN.md §0).
  *
  * All secret comparisons hash both sides with SHA-256 before
  * `timingSafeEqual`, so comparison time does not leak secret length.
  */
 
 import { createHash, timingSafeEqual } from 'node:crypto'
+
+export const SESSION_COOKIE = 'rls'
 
 export function safeEqual(a, b) {
   const digest = (value) => createHash('sha256').update(value, 'utf8').digest()
@@ -33,24 +35,28 @@ export function parseBasicAuth(header) {
   return { username: decoded.slice(0, separator), password: decoded.slice(separator + 1) }
 }
 
-export function extractToken(url) {
-  if (typeof url !== 'string' || url.length === 0) return null
-  try {
-    return new URL(url, 'http://gateway.local').searchParams.get('token')
-  } catch {
-    return null
+export function extractCookie(cookieHeader) {
+  if (typeof cookieHeader !== 'string' || cookieHeader.length === 0) return null
+  for (const part of cookieHeader.split(';')) {
+    const eq = part.indexOf('=')
+    if (eq === -1) continue
+    if (part.slice(0, eq).trim() === SESSION_COOKIE) return part.slice(eq + 1).trim()
   }
+  return null
 }
 
 /**
- * @param {{ username: string, password: string }} credentials
- *   Empty `password` disables authentication entirely (loopback-only binds).
- * @returns {{ required: boolean, check(req: { headers: object, url: string }): { ok: boolean, via: 'basic'|'token'|'none' } }}
+ * @param {{ username: string, password: string, cookieAuth?: boolean,
+ *           resolveSession?: (token: string) => { deviceId: string } | null }} options
+ *   Empty `password` disables Basic. `cookieAuth` marks pairing active so the
+ *   gate stays closed even without a password.
  */
-export function createAuthenticator({ username, password }) {
-  const required = password.length > 0
+export function createAuthenticator({ username, password, cookieAuth = false, resolveSession = () => null }) {
+  const basicEnabled = password.length > 0
+  const required = basicEnabled || cookieAuth
   return {
     required,
+    basicEnabled,
     check(req) {
       if (!required) return { ok: true, via: 'none' }
       const basic = parseBasicAuth(req.headers?.authorization)
@@ -58,9 +64,10 @@ export function createAuthenticator({ username, password }) {
         const ok = safeEqual(basic.username, username) && safeEqual(basic.password, password)
         return { ok, via: 'basic' }
       }
-      const token = extractToken(req.url)
+      const token = extractCookie(req.headers?.cookie)
       if (token !== null && token.length > 0) {
-        return { ok: safeEqual(token, password), via: 'token' }
+        const session = resolveSession(token)
+        if (session !== null) return { ok: true, via: 'cookie', deviceId: session.deviceId }
       }
       return { ok: false, via: 'none' }
     },
