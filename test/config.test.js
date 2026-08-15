@@ -74,3 +74,11 @@ test('security baseline passes on non-loopback with pairing enabled and no passw
   // pairing disabled restores the v1 rule: non-loopback needs a password
   assert.throws(() => normalizeConfig({ host: '0.0.0.0', pairing: { enabled: false } }), { code: 'E_NO_PASSWORD' })
 })
+
+test('publicUrl overrides the QR base for cellular/public access', () => {
+  assert.equal(normalizeConfig({}).publicUrl, null)
+  const cfg = normalizeConfig({ publicUrl: 'https://abc.trycloudflare.com' })
+  assert.equal(cfg.publicUrl, 'https://abc.trycloudflare.com')
+  assert.throws(() => normalizeConfig({ publicUrl: 'ftp://x' }), { code: 'E_CONFIG' })
+  assert.throws(() => normalizeConfig({ publicUrl: 'not-a-url' }), { code: 'E_CONFIG' })
+})

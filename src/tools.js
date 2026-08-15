@@ -8,7 +8,6 @@
  * and "踢掉我的旧 iPad" are the whole admin experience.
  */
 
-import { encodeQr, renderAscii } from './qrcode.js'
 
 const RESULT_SCHEMA = {
   type: 'object',
@@ -25,7 +24,7 @@ const RESULT_SCHEMA = {
   additionalProperties: false,
 }
 
-export function defineRemoteQrTool({ createPairing, baseUrl, now = () => Date.now() }) {
+export function defineRemoteQrTool({ createPairing, baseUrl, qrImageUrl = null, now = () => Date.now() }) {
   return {
     name: 'remote_qr',
     description:
@@ -38,10 +37,13 @@ export function defineRemoteQrTool({ createPairing, baseUrl, now = () => Date.no
       render: (_args, value) => {
         if (value === null || value === undefined) return [{ type: 'text', text: '(no result)' }]
         if (value.ok !== true) return [{ type: 'text', text: `生成配对失败：${value.error ?? 'UNKNOWN'}` }]
-        const qr = renderAscii(encodeQr(value.url, { border: 2 }))
+        // The official Web UI renders absolute http(s) markdown images directly,
+        // and a raster PNG is immune to chat-font breakage that garbles
+        // half-block terminal art. ASCII stays in the real terminal log only.
+        const image = qrImageUrl === null ? '' : `\n\n![DSH 配对二维码](${qrImageUrl()})\n`
         return [{
           type: 'text',
-          text: `手机扫码配对（${value.secondsLeft}s 内有效）：\n${qr}\n${value.url}\n无法扫码？在任意设备打开网关输入短码：${value.shortCode}`,
+          text: `手机扫码配对（${value.secondsLeft}s 内有效）：${image}\n${value.url}\n无法扫码？在任意设备打开网关输入短码：${value.shortCode}`,
         }]
       },
     },
@@ -53,7 +55,8 @@ export function defineRemoteQrTool({ createPairing, baseUrl, now = () => Date.no
       const t = now()
       return {
         ok: true,
-        url: `${baseUrl()}/#p=${pairing.sid}.${pairing.secret}`,
+        // /pair reads the #p= fragment and runs the challenge-response
+        url: `${baseUrl()}/pair#p=${pairing.sid}.${pairing.secret}`,
         shortCode: pairing.shortCode,
         expiresAt: pairing.expiresAt,
         secondsLeft: Math.max(0, Math.round((pairing.expiresAt - t) / 1000)),

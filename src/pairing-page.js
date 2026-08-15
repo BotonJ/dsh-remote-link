@@ -115,10 +115,15 @@ async function pair(queryValue, isCode, secret) {
     if (!res.ok) { fail('获取挑战失败（' + res.status + '）——短码或二维码可能已过期'); return }
     var ch = await res.json()
     var proof = hmacSha256Hex(secret, ch.sid + '|' + ch.nonce + '|' + ch.ts)
+    // The short-code path must verify with the code as the shared secret
+    // (the server keys the proof on the code, not on the pairing secret).
+    var body = isCode
+      ? { code: queryValue, ts: ch.ts, proof: proof, name: navigator.userAgent.slice(0, 64) }
+      : { sid: ch.sid, ts: ch.ts, proof: proof, name: navigator.userAgent.slice(0, 64) }
     var verify = await fetch('/pair/verify', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sid: ch.sid, ts: ch.ts, proof: proof, name: navigator.userAgent.slice(0, 64) })
+      body: JSON.stringify(body)
     })
     if (verify.ok) { statusEl.textContent = '配对成功，正在进入…'; location.href = '/' }
     else { fail('配对被拒绝（' + (await verify.text()) + '）') }

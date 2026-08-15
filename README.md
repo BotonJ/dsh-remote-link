@@ -5,7 +5,7 @@
 **v1.5：QR 一次性配对 + HMAC 挑战-响应 + HttpOnly Cookie 会话 + 设备注册表**（v1 的 `?token=` 明文折衷已删除，设计见 `docs/PAIRING-DESIGN.md`）。
 
 ```
-手机扫码(#p=sid.secret, secret 留在 fragment)
+手机扫码(→ /pair#p=sid.secret, secret 留在 fragment)
    → GET /pair/challenge?sid  → {nonce, ts}
    → proof = HMAC(secret, sid|nonce|ts)
    → POST /pair/verify        → Set-Cookie rls=<token> (HttpOnly, SameSite=Strict, 30d)
@@ -39,6 +39,7 @@ dsh plugin --profile web add ./dsh-remote-link     # 本地目录
 | `pairing.devicesFile` | `$DSH_HOME/remote-link/devices.json` | 设备注册表（0600） |
 | `targetHost` / `targetPort` | `127.0.0.1` / 自动 | 反代目标；默认取宿主 webserver 实际端口 |
 | `mdns` | `true` | 非 loopback 绑定时广播 `_http._tcp`（TXT 标注 `auth=pairing|basic`） |
+| `publicUrl` | 空 | 二维码/短码的公开基础地址（如 `https://xxx.trycloudflare.com`）；手机走流量/外网时必填，否则二维码指向局域网 IP 不可达 |
 | `rateLimit` | 60s 300 次 | 每客户端 IP 固定窗口限速 |
 | `authFailure` | 5min 10 次失败→封禁 5min | 暴力破解阻尼（配对端点另有独立 10/min 桶） |
 
@@ -66,12 +67,12 @@ dsh plugin --profile web add ./dsh-remote-link     # 本地目录
 ## 开发
 
 ```sh
-node --test test/*.test.js            # 85 项（单元 + 真实 socket 集成 + 配对协议正反路径）
+node --test test/*.test.js            # 86 项（单元 + 真实 socket 集成 + 配对协议正反路径）
 dsh web --patch overlay.yml --port 0  # 真机冒烟：/pair 页 → challenge → verify → cookie → UI/RPC
 node scripts/vision-decode.mjs "..."  # 可选：macOS Vision 真扫一遍自产的 QR（需 swift）
 ```
 
-零依赖。mDNS 响应器（`src/dns-codec.js`）与 QR 编码器（`src/qrcode.js`，RS+8 掩码罚分）均为手写实现；内嵌配对页的纯 JS HMAC-SHA256 与 `node:crypto` 全量交叉验证一致。
+零依赖。mDNS 响应器（`src/dns-codec.js`）为手写实现；QR 编码器使用 vendored 的 qrcode-terminal 核心（Kazuhiko Arase QRCode，MIT，`src/vendor/QRCode/`，含 UTF-8 补丁），替代早期手写编码器（曾产出结构自洽但扫码器无法识别的码）。内嵌配对页的纯 JS HMAC-SHA256 与 `node:crypto` 全量交叉验证一致。
 
 **sentinel 发布自扫**：tarball 判定 `review`（6 分）——三个 `JS-IMPORT-NET` medium 即插件本职（认证网关），无 critical/high、无运行时依赖、无生命周期脚本。
 

@@ -1,0 +1,6 @@
+{
+  "name": "dsh-remote-link-vendor",
+  "private": true,
+  "type": "commonjs",
+  "description": "Vendored CommonJS code (Kazuhiko Arase QRCode encoder + qrcode-terminal renderer). The nested package.json forces CommonJS so these files load correctly inside the ESM plugin package."
+}

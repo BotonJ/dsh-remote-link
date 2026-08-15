@@ -1,0 +1,6 @@
+{
+  "name": "dsh-remote-link-vendor-qrcode",
+  "private": true,
+  "type": "commonjs",
+  "description": "Vendored Kazuhiko Arase QRCode for JavaScript (from qrcode-terminal@0.12.0). This nested package.json forces CommonJS so the files load correctly inside the ESM plugin package."
+}

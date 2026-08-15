@@ -27,7 +27,7 @@ import { createPairingService } from './pairing.js'
 import { PAIRING_PAGE_HTML } from './pairing-page.js'
 import { defineForkSessionTool } from './fork-session.js'
 import { defineRemoteQrTool, defineRemoteDevicesTool } from './tools.js'
-import { encodeQr, renderAscii } from './qrcode.js'
+import { encodeQr, renderQr, renderPng } from './qrcode.js'
 
 export const name = 'dsh-remote-link'
 export const inject = ['tools']
@@ -68,6 +68,24 @@ export function apply(ctx, config) {
     })
     : null
 
+  // One live pairing at a time: the terminal log, the remote_qr tool, and the
+  // desktop chat's /qr.png image must all show the SAME pairing, so repeated
+  // tool calls within the TTL reuse it instead of invalidating the visible QR.
+  let currentPairing = null
+  const pairingUrl = (pairing) => {
+    const base = cfg.publicUrl ?? `http://${lanAddress()}:${gateway.port}`
+    // /pair is the page that reads the #p= fragment and runs the
+    // challenge-response; the bare root would 401 before pairing.
+    return `${base}/pair#p=${pairing.sid}.${pairing.secret}`
+  }
+  const currentOrMint = () => {
+    const now = Date.now()
+    if (currentPairing === null || currentPairing.expiresAt <= now + 2_000) {
+      currentPairing = pairingService.createPairing()
+    }
+    return currentPairing
+  }
+
   const gateway = createGateway({
     auth: createAuthenticator({
       username: cfg.username,
@@ -83,13 +101,20 @@ export function apply(ctx, config) {
     pairingPage: PAIRING_PAGE_HTML,
     pairLimiter: createRateLimiter({ windowMs: 60_000, max: 10 }),
     cookieMaxAgeSeconds: cfg.pairing.sessionMaxAgeDays * 86_400,
+    qrImage: pairingService === null
+      ? null
+      : () => {
+          const pairing = currentOrMint()
+          return renderPng(pairingUrl(pairing))
+        },
   })
 
   ctx.tools.register(defineForkSessionTool(ctx))
   if (pairingService !== null) {
     ctx.tools.register(defineRemoteQrTool({
-      createPairing: () => pairingService.createPairing(),
-      baseUrl: () => `http://${lanAddress()}:${gateway.port}`,
+      createPairing: currentOrMint,
+      baseUrl: () => cfg.publicUrl ?? `http://${lanAddress()}:${gateway.port}`,
+      qrImageUrl: () => `http://127.0.0.1:${gateway.port}/qr.png?v=${Date.now()}`,
     }))
     ctx.tools.register(defineRemoteDevicesTool({ service: pairingService }))
   }
@@ -131,9 +156,9 @@ export function apply(ctx, config) {
         }
         log(`gateway on ${cfg.host}:${gateway.port} → ${target().host}:${target().port}`)
         if (pairingService !== null) {
-          const pairing = pairingService.createPairing()
-          const url = `http://${lanAddress()}:${gateway.port}/#p=${pairing.sid}.${pairing.secret}`
-          log(`pairing ready for 5min — scan or visit:\n${renderAscii(encodeQr(url, { border: 2 }))}\n${url}\nshort code: ${pairing.shortCode}`)
+          const pairing = currentOrMint()
+          const url = pairingUrl(pairing)
+          log(`pairing ready for 5min — scan or visit:\n${renderQr(url)}\n${url}\nshort code: ${pairing.shortCode}`)
         } else if (cfg.password.length > 0) {
           log(`basic auth user "${cfg.username}" (password from config)`)
         }

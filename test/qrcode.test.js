@@ -30,13 +30,14 @@ function independentEcc(data, degree) {
     }
     gen = next
   }
-  // remainder of data·x^degree mod gen (synthetic division, MSB first)
+  // gen is lowest-degree-first; the division walks the remainder
+  // highest-degree-first, so consume coefficients in descending order
   const rem = new Array(degree).fill(0)
   for (const byte of data) {
     const factor = byte ^ rem[0]
     rem.shift()
     rem.push(0)
-    for (let i = 0; i < degree; i += 1) rem[i] ^= gfMul(gen[i + 1], factor)
+    for (let i = 0; i < degree; i += 1) rem[i] ^= gfMul(gen[degree - 1 - i], factor)
   }
   return rem
 }
@@ -45,9 +46,11 @@ test('picks the smallest version that fits a byte-mode payload', () => {
   assert.equal(pickVersion('hello'), 1)
   assert.equal(pickVersion('x'.repeat(17)), 1)         // V1-L byte capacity is 17
   assert.equal(pickVersion('x'.repeat(18)), 2)
-  const url = `http://192.168.1.100:3081/#p=${'a'.repeat(22)}.${'b'.repeat(43)}`
+  const url = `http://192.168.1.100:3081/pair#p=${'a'.repeat(22)}.${'b'.repeat(43)}`
   assert.ok(pickVersion(url) >= 4 && pickVersion(url) <= 6, `pairing URL → ${pickVersion(url)}`)
-  assert.throws(() => pickVersion('x'.repeat(300)), /too long/i)
+  // auto-selects beyond v10 (the old hand-written cap); only overflows past v40
+  assert.equal(pickVersion('x'.repeat(300)), 11)
+  assert.throws(() => pickVersion('x'.repeat(3000)), /overflow/i)
 })
 
 test('matrix structure: size, finders, timing, dark module, completeness', () => {
@@ -57,7 +60,9 @@ test('matrix structure: size, finders, timing, dark module, completeness', () =>
     for (let r = 0; r < 7; r += 1) {
       for (let c = 0; c < 7; c += 1) {
         const ring = Math.max(Math.abs(r - 3), Math.abs(c - 3))
-        if (get(r0 + r, c0 + c) !== (ring !== 1)) return false
+        // standard 7×7 finder: outer ring (3) and inner ring (1) dark,
+        // light ring (2) light, center 3×3 (0) dark — only ring 2 is light
+        if (get(r0 + r, c0 + c) !== (ring !== 2)) return false
       }
     }
     return true
@@ -85,14 +90,15 @@ test('alignment pattern appears at (18,18) for version 2', () => {
 
 test('format info: 15-bit BCH parity is valid and mask id is recoverable', () => {
   const { size, get } = encodeQr('hello')
-  // collect format bits (copy 1)
+  // collect format bits (copy 1) from the true positions: bits 0-5 down
+  // column 8 (rows 0..5), (7,8)=bit6, (8,8)=bit7, (8,7)=bit8, row 8 (cols 5..0)=bits 9-14
   let bits = 0
   const take = (bit, i) => { if (bit) bits |= 1 << i }
-  for (let i = 0; i <= 5; i += 1) take(get(8, i), i)
-  take(get(8, 7), 6)
+  for (let i = 0; i <= 5; i += 1) take(get(i, 8), i)
+  take(get(7, 8), 6)
   take(get(8, 8), 7)
-  take(get(7, 8), 8)
-  for (let i = 9; i < 15; i += 1) take(get(14 - i, 8), i)
+  take(get(8, 7), 8)
+  for (let i = 9; i < 15; i += 1) take(get(8, 14 - i), i)
   const unmasked = bits ^ 0x5412
   // BCH(15,5) check with generator 0x537
   let rem = unmasked
@@ -112,6 +118,17 @@ test('Reed-Solomon ecc matches an independent GF implementation (multi-block ver
   const data = Array.from({ length: 120 }, (_, i) => (i * 37 + 11) & 0xff)
   assert.deepEqual(rsComputeEcc(data, 26), Uint8Array.from(independentEcc(data, 26)))
   assert.deepEqual(rsComputeEcc(data, 18), Uint8Array.from(independentEcc(data, 18)))
+})
+
+test('Reed-Solomon ecc matches the known-good python-qrcode vector (byte mode "hello", v1-L)', () => {
+  // data codewords for "hello" (mode 0100, len 5, ASCII, EC-pad) and the ECC
+  // produced by python-qrcode's battle-tested encoder (ground truth).
+  const data = [
+    0x40, 0x56, 0x86, 0x56, 0xc6, 0xc6, 0xf0, 0xec, 0x11, 0xec,
+    0x11, 0xec, 0x11, 0xec, 0x11, 0xec, 0x11, 0xec, 0x11,
+  ]
+  assert.deepEqual([...rsComputeEcc(data, 7)],
+    [0x25, 0x19, 0xd0, 0xd2, 0x68, 0x59, 0x39], 'v1-L ecc must match the reference encoder')
 })
 
 test('ASCII render is square-ish and uses half blocks', () => {

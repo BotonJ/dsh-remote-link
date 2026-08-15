@@ -13,6 +13,7 @@ function qrTool(overrides = {}) {
   return defineRemoteQrTool({
     createPairing: () => service.createPairing(),
     baseUrl: () => 'http://192.168.1.23:3081',
+    qrImageUrl: () => 'http://127.0.0.1:3081/qr.png?v=1234',
     now: () => 1_000_000,
     ...overrides,
     service,
@@ -25,18 +26,20 @@ test('remote_qr mints a fresh pairing with URL, short code, and expiry evidence'
   assert.equal(tool.name, 'remote_qr')
   const result = await tool.execute({}, { token: 't' })
   assert.equal(result.ok, true)
-  assert.match(result.url, /^http:\/\/192\.168\.31\.9:3081\/#p=[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/)
+  assert.match(result.url, /^http:\/\/192\.168\.31\.9:3081\/pair#p=[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/)
   assert.match(result.shortCode, /^\d{6}$/)
   assert.equal(result.expiresAt, 1_300_000)
   assert.equal(result.secondsLeft, 300)
   assert.equal(service.challenge(result.url.split('#p=')[1].split('.')[0]) !== null, true, 'URL sid is live')
 })
 
-test('remote_qr render shows the ASCII QR, the URL, and the short code', async () => {
+test('remote_qr render inlines the PNG image markdown, the URL, and the short code', async () => {
   const tool = qrTool({ service: serviceFixture() })
   const result = await tool.execute({}, { token: 't' })
   const text = tool.output.render({}, result).map((b) => b.text).join('\n')
-  assert.ok(text.includes('▀') || text.includes('█'), 'has QR blocks')
+  assert.match(text, /!\[[^\]]*\]\(http:\/\/127\.0\.0\.1:3081\/qr\.png\?v=\d+\)/, 'inlines the gateway PNG as markdown image')
+  assert.ok(!text.includes('▀') && !text.includes('▄') && !text.includes('█'), 'no half-block art in chat (chat fonts garble it)')
+  assert.ok(!text.includes('```'), 'no code fence needed for a raster image')
   assert.ok(text.includes(result.url))
   assert.ok(text.includes(result.shortCode))
   assert.doesNotThrow(() => tool.output.render({}, null))

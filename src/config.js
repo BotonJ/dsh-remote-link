@@ -62,6 +62,16 @@ export function normalizeConfig(raw) {
   const mdns = input.mdns === undefined ? true : input.mdns
   if (typeof mdns !== 'boolean') throw new ConfigError('config.mdns must be a boolean')
 
+  // When set, the pairing QR / short-code URLs are built from this base URL
+  // (e.g. a public tunnel like https://xxx.trycloudflare.com) instead of the
+  // LAN address — required for phones connecting over cellular/internet.
+  const publicUrl = input.publicUrl === undefined || input.publicUrl === null || input.publicUrl === ''
+    ? null
+    : requireString(input.publicUrl, 'publicUrl')
+  if (publicUrl !== null && !/^https?:\/\//.test(publicUrl)) {
+    throw new ConfigError('config.publicUrl must start with http:// or https://')
+  }
+
   const pairing = section(input.pairing, { enabled: true, ttlMs: 300_000, sessionMaxAgeDays: 30, deviceIdleExpiryDays: 90, devicesFile: null }, ['ttlMs', 'sessionMaxAgeDays', 'deviceIdleExpiryDays'])
   if (typeof pairing.enabled !== 'boolean') throw new ConfigError('config.pairing.enabled must be a boolean')
   if (pairing.devicesFile !== null && typeof pairing.devicesFile !== 'string') {
@@ -91,6 +101,7 @@ export function normalizeConfig(raw) {
     username,
     password,
     mdns,
+    publicUrl,
     target: Object.freeze(target),
     rateLimit: Object.freeze(section(input.rateLimit, { windowMs: 60_000, max: 300 }, ['windowMs', 'max'])),
     authFailure: Object.freeze(section(input.authFailure, { windowMs: 300_000, max: 10, banMs: 300_000 }, ['windowMs', 'max', 'banMs'])),

@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { encodeQr } from '../src/qrcode.js'
 
-const payload = process.argv[2] ?? 'http://192.168.1.100:3081/#p=AAAAAAAAAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+const payload = process.argv[2] ?? 'http://192.168.1.100:3081/pair#p=AAAAAAAAAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 const qr = encodeQr(payload, { border: 4 })
 const scale = 8
 const px = qr.bordered.length * scale
@@ -21,7 +21,9 @@ for (let r = 0; r < px; r += 1) {
   const row = Buffer.alloc(1 + Math.ceil(px / 8), 0)
   row[0] = 0 // filter: none
   for (let c = 0; c < px; c += 1) {
-    if (qr.bordered[Math.floor(r / scale)][Math.floor(c / scale)]) {
+    // 1-bit grayscale PNG: 0 = black, 1 = white. Dark modules must render
+    // black, so set bits for the light (background) modules only.
+    if (!qr.bordered[Math.floor(r / scale)][Math.floor(c / scale)]) {
       row[1 + (c >> 3)] |= 0x80 >> (c & 7)
     }
   }

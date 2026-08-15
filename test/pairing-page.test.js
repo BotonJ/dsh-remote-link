@@ -33,4 +33,9 @@ test('page wires the v1.5 protocol: fragment secret, short-code entry, verify bo
   assert.doesNotMatch(PAIRING_PAGE_HTML, /crypto\.subtle/, 'must not rely on secure-context APIs')
   // proof message must match the server convention sid|nonce|ts
   assert.match(PAIRING_PAGE_HTML, /sid\s*\+\s*['"]\|['"]\s*\+\s*[^+]+\+\s*['"]\|['"]\s*\+\s*[A-Za-z.]*ts/)
+  // short-code path verifies with the code as the shared secret (server keys
+  // the proof on `code`, not on the pairing secret) — regression for the
+  // v1.5 page sending `sid` and failing with BAD_PROOF.
+  assert.match(PAIRING_PAGE_HTML, /\{ code: queryValue/, 'code path verify body carries the code')
+  assert.match(PAIRING_PAGE_HTML, /\{ sid: ch\.sid/, 'fragment path verify body carries the sid')
 })

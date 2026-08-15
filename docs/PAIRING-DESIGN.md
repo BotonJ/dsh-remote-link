@@ -20,7 +20,7 @@
   ├─ 生成 pairing = { sid: 16B random,
   │    secret: 32B random, exp: 5min, uses: 1 }
   └─ 终端 ASCII QR + 聊天内 QR：
-     http://<lan-ip>:3081/#p=<sid>.<b64url(secret)>
+     http://<lan-ip>:3081/pair#p=<sid>.<b64url(secret)>
                                         │ 扫码打开（secret 在 fragment，
                                         │ 永不发给服务器）
                                         ▼
