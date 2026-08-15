@@ -1,0 +1,8 @@
+- insert:
+    - id: remote-link
+      name: dsh-remote-link
+      config:
+        host: 0.0.0.0
+        port: 3081
+        password: change-me
+        mdns: true
