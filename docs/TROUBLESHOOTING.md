@@ -12,12 +12,13 @@
 |---|---|---|
 | DSH web（真实上游） | ✅ 运行 | `127.0.0.1:49152`（DSH Desktop GUI，本会话所在进程） |
 | 插件网关 | ❌ **未运行** | `runner-gateway.mjs` 已被 kill，`127.0.0.1:3081` 未监听 |
-| localtunnel 客户端 | ✅ 运行 | PID 31486，`node .../localtunnel/bin/lt.js --port 3081` |
-| 隧道域名 | ✅ 已分配 | `https://slow-clocks-mix.loca.lt`（重启后可能变化） |
-| 隧道连通性 | ❌ 不可达 | 网关未起 → localtunnel 转发到 3081 失败（`000`） |
+| localtunnel 客户端 | ❌ **已再次退出** | 见 §2.3：第二次规律性退出（11:04→11:27，约 23 分钟） |
+| 隧道域名 | （已失效） | `https://slow-clocks-mix.loca.lt`（客户端退出后不可达） |
+| 隧道连通性 | ❌ 不可达 | 客户端已退出 |
 | scan-me.png | ✅ 存在 | 见 §4 |
 
-**结论：现在整条链路是断的（网关没起）。** 要恢复，按 §5 操作手册执行。
+**结论：现在整条链路是断的（网关没起 + localtunnel 已退出）。** 要恢复，
+按 §5 操作手册执行。
 
 ---
 
@@ -91,6 +92,18 @@ node --test test/*.test.js          # 当前 87 项全过
 
 ---
 
+## 1.7 聊天里的二维码"乱码"（根因 + 最终方案，2026-08-15 修复）
+
+**现象**：remote_qr 在 WebUI 聊天里输出的 ASCII 二维码白区错位、像乱码；scan-me.png 文件本身却是好的（zbar 可解）。
+
+**根因**：聊天代码块的字体不是终端等宽字体——半块字符（▄▀█）在 Web 字体下宽度不一致，逐行错位。ASCII 码只活在真终端里（MiMo 的截图即真终端，块字符完美对齐）。
+
+**最终方案**：聊天里输出**真 PNG**。
+- `renderPng()`：内置 8-bit 灰度 PNG 编码器（zbar 回环验证）
+- 网关 `GET /qr.png`：当前活配对的 PNG；**仅限 loopback 直连且无代理链**（localtunnel 转发虽来自 loopback socket 但带 `x-forwarded-for` → 403，实测拦截生效）——"看得见屏幕才看得见码"
+- `remote_qr` 输出 `![DSH 配对二维码](http://127.0.0.1:<port>/qr.png)`——官方 WebUI 的 markdown 直接渲染绝对 http(s) 图片（MarkdownText 源码注释明示），光栅图天然免疫字体问题
+- 终端启动日志保留 ASCII（真终端里它是完美的）；终端日志/工具/图片端点共享**同一个活配对**（TTL 内不漂移）
+
 ## 2. 隧道问题全记录
 
 ### 2.1 为什么需要隧道
@@ -113,11 +126,18 @@ CGNAT 可能性大）。手机用**流量**无法直达局域网 IP，必须经�
 
 ### 2.3 localtunnel（当前方案）
 
+**2026-08-15 复盘**：客户端再次静默死亡（问题 1 当场复发，域名成孤儿 → 502/000）。两个根治动作：
+- 启动改用 `--subdomain my-subdomain`：**域名固定**为 `https://my-subdomain.loca.lt`，重启不再漂移（问题 2 消除）；网关重启后 publicUrl 永远一致，QR 不会指向死域名
+- 死亡仍无法根治（免费服务），但固定子域把"复活成本"降为一条命令
+
 - 命令：`npx -y localtunnel --port 3081` → 输出 `https://<随机>.loca.lt`
 - 数据面：Mac 出站连 `localtunnel.app:19333`（长连接），手机 → loca.lt 服务器
   → 该长连接 → 本机 3081。
 - **已知问题**：
-  1. **客户端会意外退出**（exit 0、日志无错误）→ 隧道断 → 手机 Bad gateway；
+  1. **客户端会规律性退出**（exit 0、日志无错误、只输出过一行 URL）——已观察到
+     **两次**：npx 启动 10:38→约 11:04（约 26 分钟）、node 直跑 11:04→11:27
+     （约 23 分钟）。约 **23–26 分钟**即干净退出，疑似服务器侧断连或客户端
+     心跳超时后直接 `process.exit` 而非重连。→ 隧道断 → 手机 Bad gateway；
   2. **重启后域名变化**（`dark-houses-shine` → `slow-clocks-mix`），旧域名失效；
   3. 手机端曾出现 Bad gateway：loca.lt → Mac 转发失败（本机链路抖动），或
      **国内网络到 loca.lt 本身不稳定**（免费服务，间歇性被限）；
@@ -126,6 +146,9 @@ CGNAT 可能性大）。手机用**流量**无法直达局域网 IP，必须经�
   ```sh
   node ~/.npm/_npx/75ac80b86e83d4a2/node_modules/localtunnel/bin/lt.js --port 3081
   ```
+- **排查方向（针对规律性退出）**：抓 `process` 退出信号/`uncaughtException`/
+  socket `close` 事件；对比 localtunnel 版本（0.12.0 的已知 issue）；或直接换
+  更稳的隧道方案（§7）。
 
 ### 2.4 排障判断口诀
 
@@ -170,7 +193,7 @@ cd ~/dsh-remote-link
 node runner-gateway.mjs "https://<当前.loca.lt>" 3081 49152 &
 
 # 2) 若 localtunnel 不在：先起它，等它打印新域名，再执行第 1 步
-node ~/.npm/_npx/75ac80b86e83d4a2/node_modules/localtunnel/bin/lt.js --port 3081 &
+node ~/.npm/_npx/75ac80b86e83d4a2/node_modules/localtunnel/bin/lt.js --port 3081 --subdomain my-subdomain &
 
 # 3) 验证
 curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3081/pair        # 期望 200
