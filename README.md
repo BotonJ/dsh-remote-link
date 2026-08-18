@@ -8,6 +8,8 @@
 
 **v1.6.1：死腿清理 + 连接身份 + 全链路健康**——连续 3 个 ping 无 pong 的半开连接被主动关闭（客户端立刻重连，不再干等 TCP 超时）；`/status` 的每条连接标注设备身份（配对 cookie → 设备名 + 来源 IP）、上游健康（最近成功 + 最近 10 条代理错误）、隧道连接器心跳年龄（`cf-tunnel.sh` 每 30s 落盘，配置 `tunnelHeartbeatFile` 读取）。
 
+**v1.6.2：也适用于 MiMo Code**——网关本质是"认证 + 反代"，上游不挑食。`mimo/` 目录提供恢复移动端 Web UI 的 2 文件补丁，独立运行器 `runner-gateway.mjs` 一条命令把 MiMo Code 变成手机可遥控的 agent（见下文"也适用于 MiMo Code"）。
+
 **v1.5：QR 一次性配对 + HMAC 挑战-响应 + HttpOnly Cookie 会话 + 设备注册表**（v1 的 `?token=` 明文折衷已删除，设计见 `docs/PAIRING-DESIGN.md`）。
 
 ```
@@ -63,6 +65,23 @@ dsh plugin --profile web add ./dsh-remote-link     # 本地目录
 ## fork_session 工具
 
 模型可调用：以**最近一个已完成回合**为边界创建子会话（继承全部上下文，当前会话不受影响），并自动挂回同一工作区。复刻官方 UI "分叉" 按钮的完整配方（边界计算 → `agents.create` 带 seed/meta → `workspace.attachSession`）。对用户说"分个叉试试别的方向"即可触发。
+
+## 也适用于 MiMo Code
+
+网关对上游只做"认证 + 反代"，不限于 DSH。独立运行器可以把任何本地 HTTP 上游变成手机扫码可遥控的服务，已实测 **MiMo Code**（源码版）：
+
+```sh
+# MiMo 侧（回环、无密码，认证由网关承担；需先安装 mimo/ 目录的 2 文件补丁恢复 Web UI）
+bun run packages/opencode/src/index.ts serve --hostname 127.0.0.1 --port 3000
+
+# 网关侧（局域网模式；流量模式把第一个参数换成公网地址并另起 scripts/cf-tunnel.sh）
+node runner-gateway.mjs '' 3081 3000 >| /tmp/rl-gw.log 2>&1 &
+```
+
+手机扫码即得 MiMo 移动端 UI（会话列表 / 消息流 / SSE 流式输出）。安装补丁、
+注意事项（预编译二进制 Web UI 被构建期禁用；MiMo 的 SSE 自带心跳、无需 WS 保活）
+与出处许可见 [`mimo/README.md`](mimo/README.md)。此模式下聊天框工具
+（remote_qr / fork_session 等）不可用——配对由 `/qr` 页面承担，功能等价。
 
 ## 安全边界
 
