@@ -86,6 +86,13 @@ export function normalizeConfig(raw) {
     ? null
     : requireString(input.tunnelHeartbeatFile, 'tunnelHeartbeatFile')
 
+  // Full-stack host telemetry cadence on /status: POSTs /api/host.describe
+  // (webserver → ApiProxy → host must all answer) and taps the host event
+  // stream. Non-DSH upstreams turn it off themselves after a few 404s.
+  const hostProbeIntervalMs = input.hostProbeIntervalMs === undefined
+    ? 30_000
+    : intInRange(input.hostProbeIntervalMs, 'hostProbeIntervalMs', 0, 3_600_000)
+
   const pairing = section(input.pairing, { enabled: true, ttlMs: 300_000, sessionMaxAgeDays: 30, deviceIdleExpiryDays: 90, devicesFile: null }, ['ttlMs', 'sessionMaxAgeDays', 'deviceIdleExpiryDays'])
   if (typeof pairing.enabled !== 'boolean') throw new ConfigError('config.pairing.enabled must be a boolean')
   if (pairing.devicesFile !== null && typeof pairing.devicesFile !== 'string') {
@@ -118,6 +125,7 @@ export function normalizeConfig(raw) {
     publicUrl,
     keepaliveIntervalMs,
     tunnelHeartbeatFile,
+    hostProbeIntervalMs,
     target: Object.freeze(target),
     rateLimit: Object.freeze(section(input.rateLimit, { windowMs: 60_000, max: 300 }, ['windowMs', 'max'])),
     authFailure: Object.freeze(section(input.authFailure, { windowMs: 300_000, max: 10, banMs: 300_000 }, ['windowMs', 'max', 'banMs'])),

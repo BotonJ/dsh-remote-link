@@ -51,6 +51,9 @@ function startGateway(upstream, overrides = {}) {
     pairingPage: PAIRING_PAGE_HTML,
     pairLimiter: overrides.pairLimiter ?? limiterWith({ windowMs: 60_000, max: 1000 }),
     cookieMaxAgeSeconds: 30 * 86_400,
+    // These tests assert on the upstream's recorded traffic; the host probe's
+    // own /api requests would pollute `seen`. Telemetry has its own suite.
+    hostProbeIntervalMs: 0,
     ...overrides.gateway,
   })
   return gateway.listen({ host: '127.0.0.1', port: 0 }).then(() => gateway)

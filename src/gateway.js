@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs'
 import { proxyRequest, proxyUpgrade } from './proxy.js'
 import { SESSION_COOKIE } from './auth.js'
 import { attachLinkKeepalive } from './ws-keepalive.js'
+import { createHostProbe } from './host-probe.js'
 import { STATUS_PAGE_HTML } from './status-page.js'
 
 const REALM = 'dsh-remote-link'
@@ -63,6 +64,7 @@ export function createGateway({
   qrImage = null, qrPage = null,
   keepaliveIntervalMs = 25_000, pairingSnapshot = null,
   resolveDevice = null, tunnelHeartbeatFile = null,
+  hostProbeIntervalMs = 30_000,
 }) {
   const sockets = new Set()
   const legs = new Map() // leg id → { id, path, connectedAt, keepalive }
@@ -71,6 +73,9 @@ export function createGateway({
   const recentUpstreamErrors = [] // bounded ring: { at, where, message }
   let lastUpstreamOkAt = null
   let server = null
+  // Full-stack host telemetry (RPC probe + host event tap); non-DSH
+  // upstreams turn this off themselves after a few 404s (host-probe.js).
+  const hostProbe = createHostProbe({ target, intervalMs: hostProbeIntervalMs, log })
 
   /** Returns true when the request was a pairing endpoint and is fully handled. */
   function handlePairingRoute(req, res) {
@@ -88,6 +93,10 @@ export function createGateway({
         return true
       }
       const payload = statusSnapshot()
+      // Each status view nudges a fresh full-stack probe (fire-and-forget):
+      // the page refreshes every 5s, so telemetry stays current without
+      // waiting out the periodic interval.
+      hostProbe.refresh().catch(() => {})
       if (path === '/status.json') {
         jsonResponse(res, 200, payload)
         return true
@@ -213,6 +222,7 @@ export function createGateway({
         lastOkAt: lastUpstreamOkAt,
         recentErrors: [...recentUpstreamErrors],
       },
+      host: hostProbe.state(),
       tunnel,
       pairing: pairingInfo === null ? null : {
         shortCode: pairingInfo.shortCode,
@@ -304,7 +314,8 @@ export function createGateway({
         server.on('error', reject)
         server.listen(port, host, () => {
           server.removeListener('error', reject)
-          server.on('error', (error) => log(`gateway: server error: ${String(error)}`))
+          server.on('error', (error) => log(`gateway: server error: ${String(error?.message ?? error)}`))
+          hostProbe.start()
           log(`gateway: listening on ${host}:${server.address().port}`)
           resolve()
         })
@@ -314,6 +325,7 @@ export function createGateway({
       return server === null ? null : server.address()?.port ?? null
     },
     close() {
+      hostProbe.close()
       if (server === null) return Promise.resolve()
       for (const socket of sockets) socket.destroy()
       return new Promise((resolve) => {

@@ -45,6 +45,33 @@ export function STATUS_PAGE_HTML(payload) {
     <div class="muted">${esc(payload.tunnel.file)}</div>
   </div>`
 
+  const host = payload.host
+  let hostCard = ''
+  if (host !== null && host.enabled) {
+    if (host.supported === false) {
+      hostCard = `
+  <div class="card">宿主
+    <b class="muted">非 DSH 上游</b>
+    <div class="muted">无宿主遥测（/api 不可用）</div>
+  </div>`
+    } else {
+      const d = host.probe.describe
+      const title = d === null ? '—' : esc(d.model ?? d.version)
+      const rpc = host.probe.ok
+        ? `RPC ${esc(host.probe.ms)}ms · ${ago(Date.now() - host.probe.at)}`
+        : (host.probe.error === null ? '探测中…' : `RPC 不通（${esc(host.probe.error)}）`)
+      const sessions = host.events.connected
+        ? `${esc(host.events.runningCount)} 运行 / ${esc(host.events.sessionCount)} 会话`
+        : '事件流未连接'
+      hostCard = `
+  <div class="card">宿主（DSH）
+    <b>${title}</b>
+    <div class="muted">${rpc}</div>
+    <div class="muted">${sessions}</div>
+  </div>`
+    }
+  }
+
   const errorRows = upstream.recentErrors.slice(-5).reverse().map((e) => `
     <tr><td class="muted">${esc(new Date(e.at).toLocaleTimeString())}</td><td>${esc(e.where)}</td><td class="muted">${esc(e.message)}</td></tr>`).join('')
 
@@ -69,6 +96,7 @@ th{color:#888;font-weight:500}.short{letter-spacing:4px}
   <div class="card">当前活动连接<b>${esc(payload.legs.length)}</b></div>
   ${upstreamCard}
   ${tunnelCard}
+  ${hostCard}
   <div class="card" style="grid-column:1/-1">${pairing}</div>
 </div>
 <h2>活动连接</h2>

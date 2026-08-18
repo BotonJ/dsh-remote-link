@@ -143,3 +143,30 @@ v1.6 落地后的复盘补齐三件事：
 新增测试锁定：RSV 位置容忍（未来 permessage-deflate 帧的边界仍可解析）、
 dispose 后监听器/定时器彻底摘除、死腿清理、cookie 腿身份、上游错误环、
 心跳年龄。全量 102/102。
+
+---
+
+## 七、宿主遥测（v1.6.3，2026-08-18）
+
+借鉴自一款协议级遥控插件的架构分享（其核心洞察："Harness ApiProxy 是最好的
+注入点"）。remote-link 与它坐在同一 seam 的不同层次：它进程内消费 ApiProxy
+的类型化接口，我们转发其 HTTP 表面。本次吸收的是同一 seam 的进程外用法：
+
+1. **RPC 级健康（②）**：网关以官方客户端同款 client-request 信封 POST
+   `/api/host.describe`——该调用必须穿过 webserver → ApiProxy → 宿主才能
+   返回，成功即全栈存活；往返时间即 RPC 延迟；返回值携带
+   model/version/attachedSessions（cwd 出于隐私不展示）。
+2. **宿主事件流（①）**：订阅 `/api/events.host` 的 SSE 变体（浏览器用 WS，
+   Node 侧 GET 即可），按 `host/session-added/-status/-removed` 增量维护
+   会话忙闲表。
+
+**非 DSH 判定按"形状"而非状态码**：MiMo 的兜底 UI 路由（`.all("/*")`）对
+一切路径返回 200 HTML——包括 `/api/*`。探针据此把"200 但响应不是
+server-response 信封"与 404/501 同等计入"形状不符"，3 次后标记
+`supported=false` 并静默（含停掉 SSE）；连接拒绝/超时不计入（那可能是
+暂时下线的 DSH，值得继续探测）。真实 MiMo 链路验证：探针曾如实抓到
+"MiMo 服务已挂"（ECONNREFUSED）——遥测的第一个实战成果。
+
+**明确不借鉴的部分**（评估记录）：WebRTC/P2P 三层传输与 Service Worker
+方案根本拦不了 WebSocket，与"官方 UI 零改动"冲突；Noise E2E 加密需要
+拥有两端代码，留给 v2 relay；自有 Android 客户端是另一个产品。

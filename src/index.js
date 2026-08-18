@@ -116,6 +116,7 @@ export function apply(ctx, config) {
         },
     keepaliveIntervalMs: cfg.keepaliveIntervalMs,
     tunnelHeartbeatFile: cfg.tunnelHeartbeatFile,
+    hostProbeIntervalMs: cfg.hostProbeIntervalMs,
     pairingSnapshot: pairingService === null
       ? null
       : () => (currentPairing === null ? null : { shortCode: currentPairing.shortCode, expiresAt: currentPairing.expiresAt }),

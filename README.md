@@ -10,6 +10,8 @@
 
 **v1.6.2：也适用于 MiMo Code**——网关本质是"认证 + 反代"，上游不挑食。`mimo/` 目录提供恢复移动端 Web UI 的 2 文件补丁，独立运行器 `runner-gateway.mjs` 一条命令把 MiMo Code 变成手机可遥控的 agent（见下文"也适用于 MiMo Code"）。
 
+**v1.6.3：宿主遥测**——`/status` 的"上游健康"从"HTTP 服务器活着"升级到"DSH 全栈活着"：网关以官方客户端同款信封调用 `/api/host.describe`（必须穿过 webserver → ApiProxy → 宿主才能返回，顺带量出 RPC 延迟、取回 model/版本/会话数），并订阅 `/api/events.host` 事件流实时跟踪 agent 忙闲。非 DSH 上游（如 MiMo，其兜底 UI 路由对一切路径回 200 HTML）会被形状判定自动识别并静默，不产生噪音。
+
 **v1.5：QR 一次性配对 + HMAC 挑战-响应 + HttpOnly Cookie 会话 + 设备注册表**（v1 的 `?token=` 明文折衷已删除，设计见 `docs/PAIRING-DESIGN.md`）。
 
 ```
@@ -50,6 +52,7 @@ dsh plugin --profile web add ./dsh-remote-link     # 本地目录
 | `publicUrl` | 空 | 二维码/短码的公开基础地址（如 `https://xxx.trycloudflare.com`）；手机走流量/外网时必填，否则二维码指向局域网 IP 不可达 |
 | `keepaliveIntervalMs` | `25000` | 空闲 WS ping 注入间隔（仅帧边界注入，浏览器内核自动回 pong）；`0` 关闭。连续 3 个 ping 无 pong 的死腿会被主动断开 |
 | `tunnelHeartbeatFile` | 空 | 隧道连接器心跳文件路径（`scripts/cf-tunnel.sh` 每 30s 写入 epoch 秒）；配置后 `/status` 展示连接器存活年龄 |
+| `hostProbeIntervalMs` | `30000` | 宿主遥测周期：RPC 探针（`/api/host.describe` 全栈健康 + 延迟 + model/会话数）+ host 事件流订阅；非 DSH 上游自动静默；`0` 关闭 |
 | `rateLimit` | 60s 300 次 | 每客户端 IP 固定窗口限速 |
 | `authFailure` | 5min 10 次失败→封禁 5min | 暴力破解阻尼（配对端点另有独立 10/min 桶） |
 
@@ -96,7 +99,7 @@ node runner-gateway.mjs '' 3081 3000 >| /tmp/rl-gw.log 2>&1 &
 ## 开发
 
 ```sh
-node --test test/*.test.js            # 102 项（单元 + 真实 socket 集成 + 配对协议正反路径 + WS 保活/清理/健康）
+node --test test/*.test.js            # 107 项（单元 + 真实 socket 集成 + 配对协议正反路径 + WS 保活/清理/健康 + 宿主遥测）
 dsh web --patch overlay.yml --port 0  # 真机冒烟：/pair 页 → challenge → verify → cookie → UI/RPC
 node scripts/vision-decode.mjs "..."  # 可选：macOS Vision 真扫一遍自产的 QR（需 swift）
 ```
