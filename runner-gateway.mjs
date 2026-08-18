@@ -32,6 +32,9 @@ apply(ctx, {
   mdns: false,
   publicUrl: publicUrl || undefined,
   pairing: { enabled: true },
+  // cf-tunnel.sh writes a beat here while cloudflared runs; /status shows the
+  // connector age. Absent file simply reports unavailable.
+  tunnelHeartbeatFile: `${process.env.HOME}/.cloudflared/dsh-tunnel.beat`,
 })
 
 for (let i = 0; i < 200; i += 1) {
