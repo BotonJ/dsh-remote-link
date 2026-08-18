@@ -72,6 +72,13 @@ export function normalizeConfig(raw) {
     throw new ConfigError('config.publicUrl must start with http:// or https://')
   }
 
+  // Idle WebSocket ping interval toward the browser (the DSH event downlinks
+  // carry no heartbeats, so quiet legs get reaped by tunnel edges / carrier
+  // NATs and the client pays a full resync on every reap). 0 disables.
+  const keepaliveIntervalMs = input.keepaliveIntervalMs === undefined
+    ? 25_000
+    : intInRange(input.keepaliveIntervalMs, 'keepaliveIntervalMs', 0, 300_000)
+
   const pairing = section(input.pairing, { enabled: true, ttlMs: 300_000, sessionMaxAgeDays: 30, deviceIdleExpiryDays: 90, devicesFile: null }, ['ttlMs', 'sessionMaxAgeDays', 'deviceIdleExpiryDays'])
   if (typeof pairing.enabled !== 'boolean') throw new ConfigError('config.pairing.enabled must be a boolean')
   if (pairing.devicesFile !== null && typeof pairing.devicesFile !== 'string') {
@@ -102,6 +109,7 @@ export function normalizeConfig(raw) {
     password,
     mdns,
     publicUrl,
+    keepaliveIntervalMs,
     target: Object.freeze(target),
     rateLimit: Object.freeze(section(input.rateLimit, { windowMs: 60_000, max: 300 }, ['windowMs', 'max'])),
     authFailure: Object.freeze(section(input.authFailure, { windowMs: 300_000, max: 10, banMs: 300_000 }, ['windowMs', 'max', 'banMs'])),

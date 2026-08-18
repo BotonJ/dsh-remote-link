@@ -114,6 +114,10 @@ export function apply(ctx, config) {
           const seconds = Math.max(0, Math.round((pairing.expiresAt - Date.now()) / 1000))
           return QR_PAGE_HTML(pairingUrl(pairing), pairing.shortCode, seconds)
         },
+    keepaliveIntervalMs: cfg.keepaliveIntervalMs,
+    pairingSnapshot: pairingService === null
+      ? null
+      : () => (currentPairing === null ? null : { shortCode: currentPairing.shortCode, expiresAt: currentPairing.expiresAt }),
   })
 
   ctx.tools.register(defineForkSessionTool(ctx))
@@ -162,6 +166,7 @@ export function apply(ctx, config) {
           // non-fatal: another instance may already provide the service
         }
         log(`gateway on ${cfg.host}:${gateway.port} → ${target().host}:${target().port}`)
+        log(`link keepalive ${cfg.keepaliveIntervalMs > 0 ? `every ${Math.round(cfg.keepaliveIntervalMs / 1000)}s when idle` : 'off'} · status: http://127.0.0.1:${gateway.port}/status`)
         if (pairingService !== null) {
           const pairing = currentOrMint()
           const url = pairingUrl(pairing)

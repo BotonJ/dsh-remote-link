@@ -52,7 +52,7 @@ export function proxyRequest(req, res, target, onError) {
   req.pipe(upstream)
 }
 
-export function proxyUpgrade(req, socket, head, target, onError) {
+export function proxyUpgrade(req, socket, head, target, onError, { onEstablished } = {}) {
   const upstream = request({
     host: target.host,
     port: target.port,
@@ -69,7 +69,11 @@ export function proxyUpgrade(req, socket, head, target, onError) {
     if (head.length > 0) upstreamSocket.write(head)
     upstreamSocket.pipe(socket)
     socket.pipe(upstreamSocket)
-    const teardown = () => { upstreamSocket.destroy(); socket.destroy() }
+    // Established before the pipes can deliver a chunk (same tick), so the
+    // observer sees every byte of both directions; seeds replay the heads
+    // already written. Returns a disposer for teardown.
+    const detach = onEstablished?.(socket, upstreamSocket, upstreamHead) ?? null
+    const teardown = () => { detach?.(); upstreamSocket.destroy(); socket.destroy() }
     upstreamSocket.on('close', teardown)
     socket.on('close', teardown)
     upstreamSocket.on('error', teardown)

@@ -82,3 +82,12 @@ test('publicUrl overrides the QR base for cellular/public access', () => {
   assert.throws(() => normalizeConfig({ publicUrl: 'ftp://x' }), { code: 'E_CONFIG' })
   assert.throws(() => normalizeConfig({ publicUrl: 'not-a-url' }), { code: 'E_CONFIG' })
 })
+
+test('keepaliveIntervalMs defaults to 25s, accepts 0 to disable, rejects garbage', () => {
+  assert.equal(normalizeConfig({}).keepaliveIntervalMs, 25_000)
+  assert.equal(normalizeConfig({ keepaliveIntervalMs: 0 }).keepaliveIntervalMs, 0)
+  assert.equal(normalizeConfig({ keepaliveIntervalMs: 5_000 }).keepaliveIntervalMs, 5_000)
+  assert.throws(() => normalizeConfig({ keepaliveIntervalMs: 300_001 }), { code: 'E_CONFIG' })
+  assert.throws(() => normalizeConfig({ keepaliveIntervalMs: -1 }), { code: 'E_CONFIG' })
+  assert.throws(() => normalizeConfig({ keepaliveIntervalMs: '25' }), { code: 'E_CONFIG' })
+})

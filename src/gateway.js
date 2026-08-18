@@ -16,6 +16,8 @@
 import { createServer } from 'node:http'
 import { proxyRequest, proxyUpgrade } from './proxy.js'
 import { SESSION_COOKIE } from './auth.js'
+import { attachLinkKeepalive } from './ws-keepalive.js'
+import { STATUS_PAGE_HTML } from './status-page.js'
 
 const REALM = 'dsh-remote-link'
 const LOOPBACK = /^(127\.0\.0\.1|::1|localhost)$/
@@ -58,15 +60,38 @@ export function createGateway({
   auth, limiter, failureBan, target, log = () => {},
   pairing = null, pairingPage = '', pairLimiter = null, cookieMaxAgeSeconds = 30 * 86_400,
   qrImage = null, qrPage = null,
+  keepaliveIntervalMs = 25_000, pairingSnapshot = null,
 }) {
   const sockets = new Set()
+  const legs = new Map() // leg id → { id, path, connectedAt, keepalive }
+  let generation = 0
+  const startedAt = Date.now()
   let server = null
 
   /** Returns true when the request was a pairing endpoint and is fully handled. */
   function handlePairingRoute(req, res) {
-    if (pairing === null) return false
+    if (pairing === null && req.url.split('?', 1)[0] !== '/status' && req.url.split('?', 1)[0] !== '/status.json') return false
     const path = req.url.split('?', 1)[0]
-    if (path !== '/pair' && path !== '/pair/' && path !== '/pair/challenge' && path !== '/pair/verify' && path !== '/qr.png' && path !== '/qr') return false
+    if (path !== '/pair' && path !== '/pair/' && path !== '/pair/challenge' && path !== '/pair/verify' && path !== '/qr.png' && path !== '/qr' && path !== '/status' && path !== '/status.json') return false
+
+    // Local-only observability surface: same fence as the QR image — loopback
+    // source AND no proxy chain, so tunneled clients never see link telemetry.
+    if (path === '/status' || path === '/status.json') {
+      const viaLoopback = LOOPBACK.test(clientIp(req))
+      const viaProxy = req.headers['x-forwarded-for'] !== undefined
+      if (!viaLoopback || viaProxy) {
+        plainResponse(res, 403, {}, 'forbidden')
+        return true
+      }
+      const payload = statusSnapshot()
+      if (path === '/status.json') {
+        jsonResponse(res, 200, payload)
+        return true
+      }
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(STATUS_PAGE_HTML(payload))
+      return true
+    }
 
     // /qr.png exposes the LIVE pairing image — desktop chat only. Loopback
     // source AND no proxy chain: localtunnel forwards arrive on loopback
@@ -146,6 +171,28 @@ export function createGateway({
     return { allowed: true, verdict }
   }
 
+  /** Aggregated payload for the loopback status page/JSON. */
+  function statusSnapshot() {
+    const now = Date.now()
+    const pairingInfo = pairingSnapshot?.() ?? null
+    return {
+      uptimeMs: now - startedAt,
+      generation,
+      keepaliveIntervalMs,
+      legs: [...legs.values()].map((leg) => ({
+        id: leg.id,
+        path: leg.path,
+        connectedAt: leg.connectedAt,
+        ageMs: now - leg.connectedAt,
+        keepalive: leg.keepalive.stats(),
+      })),
+      pairing: pairingInfo === null ? null : {
+        shortCode: pairingInfo.shortCode,
+        secondsLeft: Math.max(0, Math.round((pairingInfo.expiresAt - now) / 1000)),
+      },
+    }
+  }
+
   function onRequest(req, res) {
     if (handlePairingRoute(req, res)) return
     const decision = gate(req)
@@ -171,7 +218,28 @@ export function createGateway({
       }
       return socketResponse(socket, 401, 'Unauthorized', { 'www-authenticate': `Basic realm="${REALM}"` })
     }
-    proxyUpgrade(req, socket, head, target(), (error) => log(`gateway: upgrade error: ${String(error?.message ?? error)}`))
+    // Per-leg keepalive: ping the browser direction when idle so tunnel edges
+    // and carrier NATs never reap a live but quiet event stream (see
+    // ws-keepalive.js). The leg registers for the status page and unregisters
+    // on teardown.
+    generation += 1
+    const legId = generation
+    const leg = { id: legId, path: req.url.split('?', 1)[0], connectedAt: Date.now(), keepalive: null }
+    legs.set(legId, leg)
+    proxyUpgrade(req, socket, head, target(), (error) => log(`gateway: upgrade error: ${String(error?.message ?? error)}`), {
+      onEstablished: (downSocket, upstreamSocket, upstreamHead) => {
+        leg.keepalive = attachLinkKeepalive(downSocket, upstreamSocket, {
+          intervalMs: keepaliveIntervalMs,
+          seedDown: head,
+          seedUp: upstreamHead,
+          log,
+        })
+        const drop = () => { legs.delete(legId); leg.keepalive?.dispose() }
+        downSocket.on('close', drop)
+        downSocket.on('error', drop)
+        return drop
+      },
+    })
   }
 
   return {
