@@ -6,6 +6,8 @@
 
 **v1.6：链路保活 + 状态页**——DSH 事件下行流（`/api/events.mux`）没有任何心跳，空闲连接会被隧道边缘/运营商 NAT 静默收割，手机端触发全量 resync。网关现按需向浏览器注入 WS ping（仅在帧边界、仅空闲时），从根源避免断连；`/status` 状态页实时展示每条连接的 RTT 与保活计数（调研与设计见 `docs/LINK-KEEPALIVE-DESIGN.md`）。
 
+**v1.6.1：死腿清理 + 连接身份 + 全链路健康**——连续 3 个 ping 无 pong 的半开连接被主动关闭（客户端立刻重连，不再干等 TCP 超时）；`/status` 的每条连接标注设备身份（配对 cookie → 设备名 + 来源 IP）、上游健康（最近成功 + 最近 10 条代理错误）、隧道连接器心跳年龄（`cf-tunnel.sh` 每 30s 落盘，配置 `tunnelHeartbeatFile` 读取）。
+
 **v1.5：QR 一次性配对 + HMAC 挑战-响应 + HttpOnly Cookie 会话 + 设备注册表**（v1 的 `?token=` 明文折衷已删除，设计见 `docs/PAIRING-DESIGN.md`）。
 
 ```
@@ -44,13 +46,14 @@ dsh plugin --profile web add ./dsh-remote-link     # 本地目录
 | `targetHost` / `targetPort` | `127.0.0.1` / 自动 | 反代目标；默认取宿主 webserver 实际端口 |
 | `mdns` | `true` | 非 loopback 绑定时广播 `_http._tcp`（TXT 标注 `auth=pairing|basic`） |
 | `publicUrl` | 空 | 二维码/短码的公开基础地址（如 `https://xxx.trycloudflare.com`）；手机走流量/外网时必填，否则二维码指向局域网 IP 不可达 |
-| `keepaliveIntervalMs` | `25000` | 空闲 WS ping 注入间隔（仅帧边界注入，浏览器内核自动回 pong）；`0` 关闭 |
+| `keepaliveIntervalMs` | `25000` | 空闲 WS ping 注入间隔（仅帧边界注入，浏览器内核自动回 pong）；`0` 关闭。连续 3 个 ping 无 pong 的死腿会被主动断开 |
+| `tunnelHeartbeatFile` | 空 | 隧道连接器心跳文件路径（`scripts/cf-tunnel.sh` 每 30s 写入 epoch 秒）；配置后 `/status` 展示连接器存活年龄 |
 | `rateLimit` | 60s 300 次 | 每客户端 IP 固定窗口限速 |
 | `authFailure` | 5min 10 次失败→封禁 5min | 暴力破解阻尼（配对端点另有独立 10/min 桶） |
 
 启动日志直接打印**一次性配对二维码**（ASCII）+ 6 位短码。手机扫码 → 官方 UI 无弹窗打开；扫不了码就在任意设备打开 `http://<IP>:3081/pair` 输短码。
 
-桌面浏览器打开 `http://127.0.0.1:<port>/status` 可看**链路状态页**：网关运行时长、WS 连接代数、每条连接的 keepalive ping RTT/收发计数、配对倒计时（`/status.json` 供脚本取数；与 `/qr` 相同的仅回环可见策略）。
+桌面浏览器打开 `http://127.0.0.1:<port>/status` 可看**链路状态页**：网关运行时长、WS 连接代数、每条连接的设备身份（配对设备名 + 来源 IP）、keepalive ping RTT/收发计数、上游健康（目标 + 最近成功 + 最近错误）、隧道连接器心跳年龄、配对倒计时（`/status.json` 供脚本取数；与 `/qr` 相同的仅回环可见策略）。
 
 ## 管理工具（聊天框即面板）
 
@@ -74,7 +77,7 @@ dsh plugin --profile web add ./dsh-remote-link     # 本地目录
 ## 开发
 
 ```sh
-node --test test/*.test.js            # 96 项（单元 + 真实 socket 集成 + 配对协议正反路径 + WS 保活）
+node --test test/*.test.js            # 102 项（单元 + 真实 socket 集成 + 配对协议正反路径 + WS 保活/清理/健康）
 dsh web --patch overlay.yml --port 0  # 真机冒烟：/pair 页 → challenge → verify → cookie → UI/RPC
 node scripts/vision-decode.mjs "..."  # 可选：macOS Vision 真扫一遍自产的 QR（需 swift）
 ```

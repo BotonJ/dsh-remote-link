@@ -115,9 +115,13 @@ export function apply(ctx, config) {
           return QR_PAGE_HTML(pairingUrl(pairing), pairing.shortCode, seconds)
         },
     keepaliveIntervalMs: cfg.keepaliveIntervalMs,
+    tunnelHeartbeatFile: cfg.tunnelHeartbeatFile,
     pairingSnapshot: pairingService === null
       ? null
       : () => (currentPairing === null ? null : { shortCode: currentPairing.shortCode, expiresAt: currentPairing.expiresAt }),
+    resolveDevice: pairingService === null
+      ? null
+      : (deviceId) => pairingService.listDevices().find((d) => d.deviceId === deviceId)?.name ?? null,
   })
 
   ctx.tools.register(defineForkSessionTool(ctx))

@@ -161,7 +161,7 @@ export function attachLinkKeepalive(downSocket, upstreamSocket, {
   const state = {
     enabled: intervalMs > 0, attachedAt,
     pingsSent: 0, pongsReceived: 0, lastPongAt: null, lastRttMs: null, worstRttMs: null,
-    desynced: false, idleMs: 0, framesDown: 0, framesUp: 0,
+    desynced: false, evicted: false, idleMs: 0, framesDown: 0, framesUp: 0,
   }
   if (!(intervalMs > 0)) return { dispose() {}, stats: () => ({ ...state }) }
 
@@ -207,7 +207,18 @@ export function attachLinkKeepalive(downSocket, upstreamSocket, {
       return
     }
     if (!upParser.atBoundary) return // mid-frame: never inject into a partial frame
-    if (outstanding.size >= 3) return // link unresponsive; the client's own timeout takes over
+    if (outstanding.size >= 3) {
+      // Three unanswered pings (≈3×interval of one-way silence): the leg is
+      // dead but TCP may not know yet (half-open mobile links can hang for
+      // minutes). Close it ourselves so the client's reconnect loop starts
+      // immediately instead of waiting for a timeout that only one side sees.
+      state.evicted = true
+      log('keepalive: 3 pings unanswered — closing dead leg')
+      clearInterval(timer)
+      timer = null
+      downSocket.destroy()
+      return
+    }
     state.idleMs = now() - lastDownDataAt
     if (state.idleMs < intervalMs) return // active traffic already feeds the path
     pingCounter += 1

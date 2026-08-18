@@ -79,6 +79,13 @@ export function normalizeConfig(raw) {
     ? 25_000
     : intInRange(input.keepaliveIntervalMs, 'keepaliveIntervalMs', 0, 300_000)
 
+  // Optional tunnel-connector heartbeat file (scripts/cf-tunnel.sh writes an
+  // epoch-seconds beat while cloudflared runs); surfaces connector liveness
+  // age on the /status page. null = no tunnel observability.
+  const tunnelHeartbeatFile = input.tunnelHeartbeatFile === undefined || input.tunnelHeartbeatFile === null || input.tunnelHeartbeatFile === ''
+    ? null
+    : requireString(input.tunnelHeartbeatFile, 'tunnelHeartbeatFile')
+
   const pairing = section(input.pairing, { enabled: true, ttlMs: 300_000, sessionMaxAgeDays: 30, deviceIdleExpiryDays: 90, devicesFile: null }, ['ttlMs', 'sessionMaxAgeDays', 'deviceIdleExpiryDays'])
   if (typeof pairing.enabled !== 'boolean') throw new ConfigError('config.pairing.enabled must be a boolean')
   if (pairing.devicesFile !== null && typeof pairing.devicesFile !== 'string') {
@@ -110,6 +117,7 @@ export function normalizeConfig(raw) {
     mdns,
     publicUrl,
     keepaliveIntervalMs,
+    tunnelHeartbeatFile,
     target: Object.freeze(target),
     rateLimit: Object.freeze(section(input.rateLimit, { windowMs: 60_000, max: 300 }, ['windowMs', 'max'])),
     authFailure: Object.freeze(section(input.authFailure, { windowMs: 300_000, max: 10, banMs: 300_000 }, ['windowMs', 'max', 'banMs'])),

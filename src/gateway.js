@@ -14,6 +14,7 @@
  */
 
 import { createServer } from 'node:http'
+import { readFileSync } from 'node:fs'
 import { proxyRequest, proxyUpgrade } from './proxy.js'
 import { SESSION_COOKIE } from './auth.js'
 import { attachLinkKeepalive } from './ws-keepalive.js'
@@ -61,11 +62,14 @@ export function createGateway({
   pairing = null, pairingPage = '', pairLimiter = null, cookieMaxAgeSeconds = 30 * 86_400,
   qrImage = null, qrPage = null,
   keepaliveIntervalMs = 25_000, pairingSnapshot = null,
+  resolveDevice = null, tunnelHeartbeatFile = null,
 }) {
   const sockets = new Set()
   const legs = new Map() // leg id → { id, path, connectedAt, keepalive }
   let generation = 0
   const startedAt = Date.now()
+  const recentUpstreamErrors = [] // bounded ring: { at, where, message }
+  let lastUpstreamOkAt = null
   let server = null
 
   /** Returns true when the request was a pairing endpoint and is fully handled. */
@@ -121,7 +125,9 @@ export function createGateway({
       return true
     }
 
-    const budget = pairLimiter.check(clientIp(req))
+    // Pairing endpoints always rate-limit: an explicit tighter budget when
+    // provided, else the general per-IP limiter (never unlimited).
+    const budget = (pairLimiter ?? limiter).check(clientIp(req))
     if (!budget.allowed) {
       plainResponse(res, 429, { 'retry-after': String(Math.max(1, Math.ceil(budget.retryAfterMs / 1000))) }, 'slow down')
       return true
@@ -175,6 +181,18 @@ export function createGateway({
   function statusSnapshot() {
     const now = Date.now()
     const pairingInfo = pairingSnapshot?.() ?? null
+    let tunnel = null
+    if (tunnelHeartbeatFile !== null) {
+      tunnel = { file: tunnelHeartbeatFile, available: false }
+      try {
+        // scripts/cf-tunnel.sh writes epoch SECONDS via `date +%s`
+        const beat = Number(readFileSync(tunnelHeartbeatFile, 'utf8').trim())
+        if (Number.isFinite(beat) && beat > 0) {
+          const lastBeatAt = beat * 1000
+          tunnel = { file: tunnelHeartbeatFile, available: true, lastBeatAt, ageMs: now - lastBeatAt }
+        }
+      } catch { /* missing/unreadable heartbeat stays "unavailable" */ }
+    }
     return {
       uptimeMs: now - startedAt,
       generation,
@@ -182,15 +200,32 @@ export function createGateway({
       legs: [...legs.values()].map((leg) => ({
         id: leg.id,
         path: leg.path,
+        ip: leg.ip,
+        auth: leg.auth,
+        deviceId: leg.deviceId,
+        deviceName: leg.deviceName,
         connectedAt: leg.connectedAt,
         ageMs: now - leg.connectedAt,
         keepalive: leg.keepalive.stats(),
       })),
+      upstream: {
+        target: target(),
+        lastOkAt: lastUpstreamOkAt,
+        recentErrors: [...recentUpstreamErrors],
+      },
+      tunnel,
       pairing: pairingInfo === null ? null : {
         shortCode: pairingInfo.shortCode,
         secondsLeft: Math.max(0, Math.round((pairingInfo.expiresAt - now) / 1000)),
       },
     }
+  }
+
+  /** Bounded ring of recent upstream failures for the status page. */
+  function recordUpstreamError(where, error) {
+    recentUpstreamErrors.push({ at: Date.now(), where, message: String(error?.message ?? error) })
+    if (recentUpstreamErrors.length > 10) recentUpstreamErrors.shift()
+    log(`gateway: ${where} error: ${String(error?.message ?? error)}`)
   }
 
   function onRequest(req, res) {
@@ -205,7 +240,9 @@ export function createGateway({
       const challenge = auth.basicEnabled ? { 'www-authenticate': `Basic realm="${REALM}"` } : {}
       return plainResponse(res, 401, challenge, 'unauthorized')
     }
-    proxyRequest(req, res, target(), (error) => log(`gateway: proxy error: ${String(error?.message ?? error)}`))
+    proxyRequest(req, res, target(), (error) => recordUpstreamError('proxy', error), {
+      onResponded: () => { lastUpstreamOkAt = Date.now() },
+    })
   }
 
   function onUpgrade(req, socket, head) {
@@ -221,12 +258,23 @@ export function createGateway({
     // Per-leg keepalive: ping the browser direction when idle so tunnel edges
     // and carrier NATs never reap a live but quiet event stream (see
     // ws-keepalive.js). The leg registers for the status page and unregisters
-    // on teardown.
+    // on teardown; identity comes from the auth verdict (pairing cookie →
+    // device) plus the source IP.
     generation += 1
     const legId = generation
-    const leg = { id: legId, path: req.url.split('?', 1)[0], connectedAt: Date.now(), keepalive: null }
+    const deviceId = decision.verdict?.deviceId ?? null
+    const leg = {
+      id: legId,
+      path: req.url.split('?', 1)[0],
+      ip: clientIp(req),
+      auth: decision.verdict?.via ?? 'none',
+      deviceId,
+      deviceName: deviceId === null ? null : resolveDevice?.(deviceId) ?? null,
+      connectedAt: Date.now(),
+      keepalive: null,
+    }
     legs.set(legId, leg)
-    proxyUpgrade(req, socket, head, target(), (error) => log(`gateway: upgrade error: ${String(error?.message ?? error)}`), {
+    proxyUpgrade(req, socket, head, target(), (error) => recordUpstreamError('upgrade', error), {
       onEstablished: (downSocket, upstreamSocket, upstreamHead) => {
         leg.keepalive = attachLinkKeepalive(downSocket, upstreamSocket, {
           intervalMs: keepaliveIntervalMs,

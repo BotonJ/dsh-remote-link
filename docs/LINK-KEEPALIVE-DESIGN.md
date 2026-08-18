@@ -119,3 +119,27 @@ resume 游标**。
   断言 ①空闲后收到 ping ②pong 回路产出 RTT ③大帧慢发期间 ping 不插入
   帧内（数据零损坏）④关闭后资源释放。
 - 全量 `node --test test/` 回归。
+
+---
+
+## 六、v1.6.1 增补（2026-08-18）
+
+v1.6 落地后的复盘补齐三件事：
+
+1. **死腿清理**：`outstanding.size >= 3`（≈3×interval 的单向静默）从"停止注入"
+   升级为**主动断开**。半开的移动连接 TCP 侧可能挂几分钟才有 FIN，客户端
+   的重连循环被白白拖住；网关代为收尸，客户端立刻进入下一代重连。
+2. **连接身份**：腿从匿名的 `{id, path}` 升级为
+   `{id, path, ip, auth, deviceId, deviceName}`——认证 verdict 里已有
+   `deviceId`（cookie 路径），配 `listDevices()` 映射人类可读名。
+   `/status` 终于能回答"这条连接是谁的"。
+3. **全链路健康**：状态页新增上游健康（`target` + `lastOkAt` + 最近 10 条
+   代理错误环）与隧道连接器心跳（`cf-tunnel.sh` 存活期间每 30s 写 epoch 秒
+   到 `$TUNNEL_HEARTBEAT`，网关读文件算年龄；秒→毫秒换算在网关侧完成）。
+
+顺手修掉的 API 毛边：`pairing` 启用而 `pairLimiter` 未传时网关会直接崩
+（`null.check`）——现在回落到主限速器，配对端点永不限速敞开。
+
+新增测试锁定：RSV 位置容忍（未来 permessage-deflate 帧的边界仍可解析）、
+dispose 后监听器/定时器彻底摘除、死腿清理、cookie 腿身份、上游错误环、
+心跳年龄。全量 102/102。

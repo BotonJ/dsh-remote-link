@@ -27,7 +27,7 @@ function forwardedHeaders(req, target) {
   return headers
 }
 
-export function proxyRequest(req, res, target, onError) {
+export function proxyRequest(req, res, target, onError, { onResponded } = {}) {
   const upstream = request({
     host: target.host,
     port: target.port,
@@ -36,6 +36,7 @@ export function proxyRequest(req, res, target, onError) {
     headers: forwardedHeaders(req, target),
   })
   upstream.on('response', (upstreamRes) => {
+    onResponded?.()
     const headers = { ...upstreamRes.headers }
     const connectionTokens = String(upstreamRes.headers.connection ?? '')
       .split(',').map((token) => token.trim().toLowerCase())
