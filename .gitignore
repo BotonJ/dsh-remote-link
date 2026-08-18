@@ -3,4 +3,3 @@ node_modules/
 .DS_Store
 scan-me.png
 scan-me.pgm
-runner-gateway.mjs
