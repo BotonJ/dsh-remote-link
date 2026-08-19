@@ -36,6 +36,22 @@ export const inject = ['tools']
 
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1'])
 
+/**
+ * Secure-context polyfill tap: the official WebUI's RPC layer mints every
+ * rpcId with crypto.randomUUID(), which browsers only expose on secure
+ * origins — on plain-HTTP LAN origins the UI loads but every RPC dies
+ * ("crypto.randomUUID is not a function", empty session list). The shim
+ * rebuilds RFC 4122 v4 on crypto.getRandomValues (NOT secure-context gated);
+ * on HTTPS the native function exists and the shim never activates.
+ */
+const RANDOM_UUID_SHIM = `if(typeof crypto.randomUUID!=='function'){crypto.randomUUID=function(){var b=crypto.getRandomValues(new Uint8Array(16));b[6]=b[6]&0x0f|0x40;b[8]=b[8]&0x3f|0x80;var h=[];for(var i=0;i<16;i++)h.push((b[i]>>4).toString(16),(b[i]&15).toString(16));return h.slice(0,8).join('')+'-'+h.slice(8,12).join('')+'-'+h.slice(12,16).join('')+'-'+h.slice(16,20).join('')+'-'+h.slice(20,32).join('')}}`
+
+export function withSecureContextShim(html) {
+  if (typeof html !== 'string' || html.includes('rl-secure-context-shim')) return html
+  const tag = `<script id="rl-secure-context-shim">${RANDOM_UUID_SHIM}</script>`
+  return html.includes('<head>') ? html.replace('<head>', `<head>${tag}`) : `${tag}${html}`
+}
+
 /** First non-internal IPv4 address, or null when no LAN interface exists. */
 export function pickLanAddress(interfaces = networkInterfaces()) {
   for (const entries of Object.values(interfaces)) {
@@ -244,6 +260,14 @@ export function apply(ctx, config) {
   try {
     ctx.inject?.(['webServer'], (scoped) => {
       webServer = scoped.webServer
+      // The webserver's own index-tap seam: runs on EVERY index.html response
+      // (dsh-host-frontend-static routes them through applyIndexTaps), so the
+      // shim reaches the browser through whichever gateway fronts this host.
+      try {
+        webServer?.tapIndex?.(withSecureContextShim)
+      } catch {
+        // pre-tapIndex hosts: LAN plain-HTTP stays limited, HTTPS unaffected
+      }
       startGateway()
     })
   } catch {

@@ -193,3 +193,29 @@ test('disposers shut the gateway down', async () => {
     await new Promise((resolve) => { upstream.server.close(resolve); upstream.server.closeAllConnections?.() })
   }
 })
+
+test('secure-context shim: v4-correct, placed in <head>, idempotent, tap registered', async () => {
+  const { withSecureContextShim } = await import('../src/index.js')
+
+  // v4 correctness: evaluate the shim against a stubbed crypto (no randomUUID).
+  const shimTag = withSecureContextShim('<head><title>x</title></head>')
+  const body = shimTag.match(/<script id="rl-secure-context-shim">(.*)<\/script>/)[1]
+  const stub = { getRandomValues: (arr) => { for (let i = 0; i < arr.length; i += 1) arr[i] = (i * 37 + 11) & 0xff; return arr } }
+  const uuid = new Function('crypto', `${body}; return crypto.randomUUID()`)(stub)
+  assert.match(uuid, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+
+  // Placement + idempotence + headless fallback.
+  assert.ok(shimTag.startsWith('<head><script id="rl-secure-context-shim">'))
+  assert.equal(withSecureContextShim(shimTag), shimTag)
+  assert.ok(withSecureContextShim('<html>no head</html>').startsWith('<script'))
+
+  // The plugin registers the transform on the injected webServer (fakeCtx's
+  // inject resolves scoped services from `this`, so webServer carries tapIndex).
+  const taps = []
+  const ctx2 = { ...fakeCtx(), webServer: { port: 1, tapIndex: (fn) => taps.push(fn) } }
+  apply(ctx2, { host: '127.0.0.1' })
+  await waitStartup()
+  assert.equal(taps.length, 1)
+  assert.equal(taps[0], withSecureContextShim)
+  for (const dispose of ctx2.disposers) dispose?.()
+})

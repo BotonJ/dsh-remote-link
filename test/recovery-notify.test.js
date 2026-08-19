@@ -3,6 +3,9 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { connect as tcpConnect } from 'node:net'
 import fs from 'node:fs/promises'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createPairingService } from '../src/pairing.js'
 import { createNotifier } from '../src/notify.js'
 import { createEventTap } from '../src/event-tap.js'
@@ -15,10 +18,17 @@ import { normalizeConfig } from '../src/config.js'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const RECOVERY = 'correct-horse-battery-staple-9f3k2m'
 
-function service(code = RECOVERY) {
+// Isolated recovery store per service: the default path points at the REAL
+// ~/.dsh/remote-link/recovery.json, which a live host may have written —
+// tests must never read (let alone depend on) production state.
+const recoveryDir = mkdtempSync(join(tmpdir(), 'rl-recovery-test-'))
+
+function service(code = RECOVERY, file = join(recoveryDir, 'r-' + Math.random().toString(36).slice(2) + '.json')) {
   const store = { load: () => [], save() {} }
-  return createPairingService({ store, ttlMs: 300_000, ...(code === null ? {} : { recoveryCode: code }) })
+  return createPairingService({ store, ttlMs: 300_000, recoveryFile: file, ...(code === null ? {} : { recoveryCode: code }) })
 }
+
+process.on('exit', () => rmSync(recoveryDir, { recursive: true, force: true }))
 
 // ---------- recovery code ----------
 
