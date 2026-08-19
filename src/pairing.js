@@ -52,6 +52,27 @@ function fsStore(filePath) {
   }
 }
 
+/** Recovery-code store: { hash, createdAt } persisted 0600 next to the
+ * device registry. Written by the remote_recovery tool; survives plugin
+ * reloads and host restarts. The plaintext code exists only in the tool's
+ * one-time reply — never on disk. */
+function recoveryStore(filePath) {
+  const file = filePath ?? join(homedir(), '.dsh', 'remote-link', 'recovery.json')
+  return {
+    load() {
+      try {
+        const parsed = JSON.parse(readFileSync(file, 'utf8'))
+        if (typeof parsed?.hash === 'string' && Number.isFinite(parsed.createdAt)) return parsed
+      } catch { /* absent or corrupt → disabled */ }
+      return null
+    },
+    save(entry) {
+      mkdirSync(join(file, '..'), { recursive: true })
+      writeFileSync(file, JSON.stringify(entry), { mode: 0o600 })
+    },
+  }
+}
+
 export function createPairingService(options = {}) {
   const {
     now = () => Date.now(),
@@ -61,15 +82,18 @@ export function createPairingService(options = {}) {
     sessionMaxAgeMs = 30 * 86_400_000,
     deviceIdleExpiryMs = 90 * 86_400_000,
     recoveryCode = null,
+    recoveryFile = null,
     exists = existsSync,
   } = options
   void exists
-  // The long-term recovery code (case "no paired device at hand"): stored as
-  // a SHA-256 digest only, compared constant-time, redeemable repeatedly —
-  // each redemption registers a fresh revocable device in the registry.
-  const recoveryHash = typeof recoveryCode === 'string' && recoveryCode.length > 0
+  // Two sources, one effective hash: the tool-written store file wins (it is
+  // what "重新生成" rotates), the static config code is the declarative
+  // fallback. Both hold SHA-256 digests only.
+  const configRecoveryHash = typeof recoveryCode === 'string' && recoveryCode.length > 0
     ? sha256Hex(recoveryCode)
     : null
+  const recovery = recoveryStore(recoveryFile)
+  let recoveryEntry = recovery.load()
 
   /** sid/secret → pairing, live until consumed or expired */
   const pairings = new Map() // sid → { sid, secret, shortCode, expiresAt }
@@ -180,16 +204,37 @@ export function createPairingService(options = {}) {
       return { ok: true, deviceId, sessionToken }
     },
 
+    /** Activate a freshly generated recovery code (remote_recovery tool):
+     * persists the digest, returns nothing secret — the caller already has
+     * the plaintext it generated. Supersedes a static config code. */
+    setRecoveryCode(code) {
+      if (typeof code !== 'string' || code.length < 16) return { ok: false, error: 'TOO_SHORT' }
+      recoveryEntry = { hash: sha256Hex(code), createdAt: now() }
+      recovery.save(recoveryEntry)
+      return { ok: true, createdAt: recoveryEntry.createdAt }
+    },
+
+    recoveryStatus() {
+      const source = recoveryEntry !== null ? 'tool' : configRecoveryHash !== null ? 'config' : null
+      return {
+        enabled: source !== null,
+        source,
+        ...(recoveryEntry === null ? {} : { createdAt: recoveryEntry.createdAt }),
+      }
+    },
+
     /** Redeem the long-term recovery code: mints a device + session like a
      * completed pairing. Not one-shot — treat the code like a password and
-     * rotate it via config; every redemption shows up in listDevices(). */
+     * rotate it via config or the remote_recovery tool; every redemption
+     * shows up in listDevices(). */
     async redeemRecovery(input) {
       pruneStale()
-      if (recoveryHash === null) return { ok: false, error: 'RECOVERY_DISABLED' }
+      const effectiveHash = recoveryEntry?.hash ?? configRecoveryHash
+      if (effectiveHash === null) return { ok: false, error: 'RECOVERY_DISABLED' }
       if (input === null || typeof input !== 'object' || typeof input.code !== 'string' || input.code.length === 0) {
         return { ok: false, error: 'BAD_REQUEST' }
       }
-      if (!constantTimeEqualHex(sha256Hex(input.code), recoveryHash)) {
+      if (!constantTimeEqualHex(sha256Hex(input.code), effectiveHash)) {
         return { ok: false, error: 'BAD_RECOVERY' }
       }
       const t = now()

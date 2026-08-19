@@ -54,7 +54,7 @@ test('pickLanAddress prefers a real LAN IPv4 over loopback/internal/v6', () => {
   assert.equal(pick({ lo0: [{ family: 'IPv4', address: '127.0.0.1', internal: true }] }), null)
 })
 
-test('apply registers fork_session + remote_qr + remote_devices; Basic still works', async () => {
+test('apply registers fork_session + remote_qr + remote_devices + remote_recovery; Basic still works', async () => {
   const upstream = await startUpstream()
   const ctx = fakeCtx()
   ctx.webServer = { port: upstream.port }
@@ -63,7 +63,7 @@ test('apply registers fork_session + remote_qr + remote_devices; Basic still wor
   await waitStartup()
 
   try {
-    assert.deepEqual(ctx.registered.map((t) => t.name), ['fork_session', 'remote_qr', 'remote_devices'])
+    assert.deepEqual(ctx.registered.map((t) => t.name), ['fork_session', 'remote_qr', 'remote_devices', 'remote_recovery'])
     const auth = `Basic ${Buffer.from('dsh:pw').toString('base64')}`
     const ok = await fetch(`http://127.0.0.1:${ctx.provided.remoteLinkGateway.port}/`, { headers: { authorization: auth } })
     assert.equal(ok.status, 200)

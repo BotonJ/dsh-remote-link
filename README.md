@@ -49,7 +49,7 @@ dsh plugin --profile web add ./dsh-remote-link     # 本地目录
 | `pairing.sessionMaxAgeDays` | `30` | cookie 会话最长寿命 |
 | `pairing.deviceIdleExpiryDays` | `90` | 设备闲置自动出局 |
 | `pairing.devicesFile` | `$DSH_HOME/remote-link/devices.json` | 设备注册表（0600） |
-| `pairing.recoveryCode` | 空 | 长期恢复码（≥16 字符，如 `openssl rand -base64 18`）：所有设备丢失时在 `/pair` 页自助恢复；每次恢复注册为可吊销设备；建议打印离线保存、按密码对待 |
+| `pairing.recoveryCode` | 空 | 长期恢复码（≥16 字符）的**静态配置方式**；推荐改用聊天工具：对 agent 说"设置恢复码"，`remote_recovery` 会生成高熵随机码、自动启用并提示保存（码只展示一次，落盘仅存 SHA-256 摘要，`$DSH_HOME/remote-link/recovery.json` 0600；再次生成即轮换，重启/HMR 存活）。用法：所有设备丢失时在 `/pair` 页"恢复接入"输入即可，每次恢复注册为可吊销设备 |
 | `notify.barkUrl` | 空 | Bark 推送地址（`https://api.day.app/<你的KEY>`） |
 | `notify.ntfyUrl` | 空 | ntfy 主题地址（`https://ntfy.sh/<私有主题>` 或自建） |
 | `notify.webhookUrl` | 空 | 通用 webhook（POST `{title, body, at}` JSON） |

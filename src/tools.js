@@ -1,13 +1,15 @@
 /**
  * The v1.5 management surface, in the v1 spirit of "tools are the panel":
  *
- *   remote_qr      — mint a one-time pairing (QR URL + ASCII art + short code)
- *   remote_devices — list / revoke / revoke-all paired devices
+ *   remote_qr       — mint a one-time pairing (QR URL + ASCII art + short code)
+ *   remote_devices  — list / revoke / revoke-all paired devices
+ *   remote_recovery — generate + activate the long-term recovery code (or check status)
  *
  * No UI work: the model renders results in the official chat, so "给我配对码"
  * and "踢掉我的旧 iPad" are the whole admin experience.
  */
 
+import { randomBytes } from 'node:crypto'
 
 const RESULT_SCHEMA = {
   type: 'object',
@@ -119,4 +121,76 @@ export function defineRemoteDevicesTool({ service }) {
       return { ok: false, error: 'BAD_ACTION', message: 'action 必须是 list | revoke | revoke-all' }
     },
   }
+}
+
+export function defineRemoteRecoveryTool({ service, random = defaultRecoveryRandom, baseUrl = null }) {
+  const RECOVERY_SCHEMA = {
+    type: 'object',
+    properties: {
+      ok: { type: 'boolean' },
+      code: { type: 'string' },
+      source: { type: 'string' },
+      createdAt: { type: 'number' },
+      pairUrl: { type: 'string' },
+      error: { type: 'string' },
+    },
+    additionalProperties: false,
+  }
+  return {
+    name: 'remote_recovery',
+    description:
+      '管理长期恢复码（所有配对设备丢失时的自救后门）。setup：生成高熵随机码并立即启用——码只在本次回复里出现一次，' +
+      '提醒用户马上保存到密码管理器或打印离线；再次 setup 会轮换旧码。status：查看是否已启用及来源。' +
+      '用户说"设置恢复码 / 生成恢复码 / 恢复码是什么状态"时调用。',
+    parameters: {
+      type: 'object',
+      properties: { action: { type: 'string', description: 'setup（默认）| status' } },
+      additionalProperties: false,
+    },
+    output: {
+      schema: RECOVERY_SCHEMA,
+      render: (_args, value) => {
+        if (value === null || value === undefined) return [{ type: 'text', text: '(no result)' }]
+        if (value.ok !== true) return [{ type: 'text', text: `操作失败：${value.error ?? 'UNKNOWN'}` }]
+        if (value.code !== undefined) {
+          return [{
+            type: 'text',
+            text:
+              '✅ 恢复码已生成并启用。**这是唯一一次展示，请立即保存**（密码管理器 + 建议打印离线）：\n\n' +
+              `\`${value.code}\`\n\n` +
+              `用法：所有设备丢失时，在任意设备打开 ${value.pairUrl ?? '<网关地址>/pair'}，选择"恢复接入"输入此码即可重新进入；` +
+              '每次恢复会注册为一个可吊销设备。此码等同主密码——泄露即换（再说一次"重新生成恢复码"）。',
+          }]
+        }
+        const source = value.source === 'tool' ? '工具生成（recovery.json）' : value.source === 'config' ? '配置文件（pairing.recoveryCode）' : null
+        return [{
+          type: 'text',
+          text: source === null
+            ? '恢复码未启用。说"设置恢复码"即可生成并启用（或手工配置 pairing.recoveryCode，≥16 字符）。'
+            : `恢复码已启用（来源：${source}${value.createdAt === undefined ? '' : `，生成于 ${new Date(value.createdAt).toISOString()}`}）。出于安全不再展示码本身；轮换请说"重新生成恢复码"。`,
+        }]
+      },
+    },
+    timeoutMs: 10_000,
+    isConcurrencySafe: () => false,
+    async execute(args) {
+      const action = args?.action ?? 'setup'
+      if (action === 'status') {
+        const status = service.recoveryStatus()
+        return { ok: true, ...(status.enabled ? { source: status.source, ...(status.createdAt === undefined ? {} : { createdAt: status.createdAt }) } : { source: 'none' }) }
+      }
+      if (action === 'setup') {
+        const code = random()
+        const result = service.setRecoveryCode(code)
+        if (result.ok !== true) return { ok: false, error: result.error }
+        return { ok: true, code, createdAt: result.createdAt, ...(baseUrl === null ? {} : { pairUrl: `${baseUrl()}/pair` }) }
+      }
+      return { ok: false, error: 'BAD_ACTION', message: 'action 必须是 setup | status' }
+    },
+  }
+}
+
+function defaultRecoveryRandom() {
+  // 24 random bytes, base64url ≈ 32 chars ≈ 144 bits of entropy.
+  return randomBytes(24).toString('base64url')
 }

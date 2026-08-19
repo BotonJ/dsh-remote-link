@@ -2,9 +2,11 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { connect as tcpConnect } from 'node:net'
+import fs from 'node:fs/promises'
 import { createPairingService } from '../src/pairing.js'
 import { createNotifier } from '../src/notify.js'
 import { createEventTap } from '../src/event-tap.js'
+import { defineRemoteRecoveryTool } from '../src/tools.js'
 import { createGateway } from '../src/gateway.js'
 import { createAuthenticator } from '../src/auth.js'
 import { createRateLimiter, createFailureBan } from '../src/ratelimit.js'
@@ -273,4 +275,59 @@ test('POST /pair/recover mints a cookie; wrong code 401; absent config RECOVERY_
   } finally {
     await gwDisabled.close()
   }
+})
+
+// ---------- remote_recovery tool + persistent store ----------
+
+test('setRecoveryCode: persists, survives restart, supersedes config, rotates', async () => {
+  const dir = await fs.mkdtemp('/tmp/rl-recovery-')
+  const file = `${dir}/recovery.json`
+  const store = { load: () => [], save() {} }
+  const mk = (code) => createPairingService({ store, ttlMs: 300_000, recoveryFile: file, ...(code === null ? {} : { recoveryCode: code }) })
+
+  const svc = mk(null)
+  assert.deepEqual(svc.recoveryStatus(), { enabled: false, source: null })
+
+  // Tool-style setup: generate, activate, redeem with that exact code.
+  const tool = defineRemoteRecoveryTool({ service: svc, baseUrl: () => 'http://x:1' })
+  const setup = await tool.execute({}, {})
+  assert.equal(setup.ok, true)
+  assert.ok(setup.code.length >= 16, 'generated code must clear the entropy floor')
+  assert.equal(svc.recoveryStatus().source, 'tool')
+  assert.equal((await svc.redeemRecovery({ code: setup.code })).ok, true)
+
+  // Restart simulation: a fresh service reading the same store still accepts.
+  assert.equal((await mk(null).redeemRecovery({ code: setup.code })).ok, true)
+
+  // Config code is the fallback only until the tool writes the file
+  // (fresh store file: the rotation above must not leak into this section).
+  const file2 = `${dir}/recovery2.json`
+  const mk2 = (code) => createPairingService({ store, ttlMs: 300_000, recoveryFile: file2, ...(code === null ? {} : { recoveryCode: code }) })
+  const withConfig = mk2('config-code-config-code-config')
+  assert.equal(withConfig.recoveryStatus().source, 'config')
+  assert.equal((await withConfig.redeemRecovery({ code: 'config-code-config-code-config' })).ok, true)
+  const rotated = await defineRemoteRecoveryTool({ service: withConfig, baseUrl: () => 'http://x:1' }).execute({}, {})
+  assert.equal(withConfig.recoveryStatus().source, 'tool')
+  assert.equal((await withConfig.redeemRecovery({ code: 'config-code-config-code-config' })).ok, false, 'rotation must kill the config code')
+  assert.equal((await withConfig.redeemRecovery({ code: rotated.code })).ok, true)
+
+  // Status action never leaks the code.
+  const status = await tool.execute({ action: 'status' }, {})
+  assert.equal(status.ok, true)
+  assert.equal(status.code, undefined)
+  await fs.rm(dir, { recursive: true, force: true })
+})
+
+test('recovery store file is 0600 and holds no plaintext', async () => {
+  const dir = await fs.mkdtemp('/tmp/rl-recovery-')
+  const file = `${dir}/recovery.json`
+  const svc = createPairingService({ store: { load: () => [], save() {} }, recoveryFile: file })
+  const tool = defineRemoteRecoveryTool({ service: svc })
+  const setup = await tool.execute({}, {})
+  const raw = await fs.readFile(file, 'utf8')
+  assert.ok(!raw.includes(setup.code), 'plaintext must never touch disk')
+  assert.match(raw, /"hash":"/)
+  const mode = (await fs.stat(file)).mode & 0o777
+  assert.equal(mode, 0o600)
+  await fs.rm(dir, { recursive: true, force: true })
 })

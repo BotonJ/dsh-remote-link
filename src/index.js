@@ -26,7 +26,7 @@ import { createAdvertiser } from './mdns.js'
 import { createPairingService } from './pairing.js'
 import { PAIRING_PAGE_HTML } from './pairing-page.js'
 import { defineForkSessionTool } from './fork-session.js'
-import { defineRemoteQrTool, defineRemoteDevicesTool } from './tools.js'
+import { defineRemoteQrTool, defineRemoteDevicesTool, defineRemoteRecoveryTool } from './tools.js'
 import { encodeQr, renderQr, renderPng } from './qrcode.js'
 import { createNotifier } from './notify.js'
 import { createEventTap } from './event-tap.js'
@@ -174,6 +174,10 @@ export function apply(ctx, config) {
       qrImageUrl: () => `http://127.0.0.1:${gateway.port}/qr.png?v=${Date.now()}`,
     }))
     ctx.tools.register(defineRemoteDevicesTool({ service: pairingService }))
+    ctx.tools.register(defineRemoteRecoveryTool({
+      service: pairingService,
+      baseUrl: () => cfg.publicUrl ?? `http://${lanAddress()}:${gateway.port}`,
+    }))
   }
 
   const lanAddress = () => {
@@ -213,7 +217,11 @@ export function apply(ctx, config) {
         }
         log(`gateway on ${cfg.host}:${gateway.port} → ${target().host}:${target().port}`)
         log(`link keepalive ${cfg.keepaliveIntervalMs > 0 ? `every ${Math.round(cfg.keepaliveIntervalMs / 1000)}s when idle` : 'off'} · status: http://127.0.0.1:${gateway.port}/status`)
-        if (pairingService !== null && cfg.pairing.recoveryCode !== null) log('recovery pairing enabled (long-term code configured)')
+        if (pairingService !== null) {
+          const recovery = pairingService.recoveryStatus()
+          if (recovery.enabled) log(`recovery pairing enabled (source: ${recovery.source})`)
+          else log('recovery code NOT set — say "设置恢复码" in chat (or configure pairing.recoveryCode) to enable emergency device recovery')
+        }
         if (eventTap !== null) {
           eventTap.start()
           log(`interaction push on idle: ${notifier.channelNames().join(', ')}`)
