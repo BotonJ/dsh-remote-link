@@ -132,6 +132,46 @@ test('security baseline: non-loopback without password AND without pairing refus
   assert.equal(ctx.registered.length, 0)
 })
 
+test('remote_qr re-mints after the pairing is consumed — no dead QR on any surface (P2-6 regression)', async () => {
+  const upstream = await startUpstream()
+  const ctx = fakeCtx()
+  ctx.webServer = { port: upstream.port }
+  apply(ctx, { host: '127.0.0.1', port: 0, pairing: { devicesFile: devicesFile() } })
+  await waitStartup()
+  const port = ctx.provided.remoteLinkGateway.port
+
+  try {
+    const qrTool = ctx.registered.find((t) => t.name === 'remote_qr')
+    const first = await qrTool.execute({}, { token: 't' })
+    const [, sid, secret] = first.url.match(/#p=([^.]+)\.(.+)$/)
+
+    // Consume the pairing exactly like the phone would.
+    const challenge = await (await fetch(`http://127.0.0.1:${port}/pair/challenge?sid=${encodeURIComponent(sid)}`)).json()
+    const proof = createHmac('sha256', Buffer.from(secret)).update(`${sid}|${challenge.nonce}|${challenge.ts}`).digest('hex')
+    const verify = await fetch(`http://127.0.0.1:${port}/pair/verify`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sid, ts: challenge.ts, proof }),
+    })
+    assert.equal(verify.status, 200)
+
+    // Within the old TTL, the tool must hand out a FRESH pairing — before
+    // the fix it returned the consumed one and phones scanned a dead QR.
+    const second = await qrTool.execute({}, { token: 't' })
+    assert.equal(second.ok, true)
+    assert.notEqual(second.url, first.url, 'consumed pairing must never be re-displayed')
+    assert.notEqual(second.shortCode, first.shortCode)
+
+    // And the fresh one is genuinely redeemable.
+    const [, sid2, secret2] = second.url.match(/#p=([^.]+)\.(.+)$/)
+    const ch2 = await (await fetch(`http://127.0.0.1:${port}/pair/challenge?sid=${encodeURIComponent(sid2)}`)).json()
+    assert.equal(ch2.sid, sid2, 're-minted pairing answers challenges')
+    void secret2
+  } finally {
+    for (const dispose of ctx.disposers) await dispose()
+    await new Promise((resolve) => { upstream.server.close(resolve); upstream.server.closeAllConnections?.() })
+  }
+})
+
 test('disposers shut the gateway down', async () => {
   const upstream = await startUpstream()
   const ctx = fakeCtx()

@@ -5,6 +5,15 @@
 # 心跳：连接器存活期间每 30s 向 $TUNNEL_HEARTBEAT 写入 epoch 秒，
 # dsh-remote-link 的 /status 页读取该文件展示隧道连接器存活时长。
 HEARTBEAT="${TUNNEL_HEARTBEAT:-$HOME/.cloudflared/dsh-tunnel.beat}"
+CFPID=0
+HBPID=0
+# Take the children with us: without the trap, killing the supervisor
+# orphaned both cloudflared and the heartbeat subshell.
+cleanup() {
+  kill "$CFPID" "$HBPID" 2>/dev/null
+  exit 0
+}
+trap cleanup INT TERM
 while true; do
   echo "[cf-tunnel] $(date '+%H:%M:%S') starting…"
   cloudflared tunnel --protocol http2 --edge-ip-version 4 --config ~/.cloudflared/config-dsh.yml run &
@@ -17,7 +26,8 @@ while true; do
   ) &
   HBPID=$!
   wait "$CFPID"
-  echo "[cf-tunnel] $(date '+%H:%M:%S') exited (code=$?), retry in 3s"
+  rc=$? # capture before any command substitution can clobber $?
+  echo "[cf-tunnel] $(date '+%H:%M:%S') exited (code=$rc), retry in 3s"
   kill "$HBPID" 2>/dev/null
   sleep 3
 done

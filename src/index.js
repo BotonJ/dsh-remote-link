@@ -83,7 +83,10 @@ export function apply(ctx, config) {
   }
   const currentOrMint = () => {
     const now = Date.now()
-    if (currentPairing === null || currentPairing.expiresAt <= now + 2_000) {
+    // Re-mint on expiry AND on consumption: a completed pairing is deleted
+    // from the service while its TTL still runs, and every QR surface (the
+    // terminal log, /qr, remote_qr, /status) must stop showing the dead code.
+    if (currentPairing === null || currentPairing.expiresAt <= now + 2_000 || !pairingService.isLive(currentPairing.sid)) {
       currentPairing = pairingService.createPairing()
     }
     return currentPairing

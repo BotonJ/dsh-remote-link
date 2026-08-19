@@ -31,8 +31,8 @@ export function defineRemoteQrTool({ createPairing, baseUrl, qrImageUrl = null, 
     name: 'remote_qr',
     description:
       '生成一次性远程配对二维码：手机扫码即可通过 HttpOnly 会话接入官方 Web UI（无需输密码）。' +
-      '每次调用都会作废上一次未使用的配对？不会——每次都是独立的新配对，5 分钟内有效且只能用一次。' +
-      '用户说"我要连手机 / 给我配对码"时调用。无需参数。',
+      '配对 5 分钟内有效且只能用一次；有效期内重复调用复用当前配对（终端日志、/qr 页与聊天里的码保持一致），' +
+      '配对完成或过期后自动铸新码。用户说"我要连手机 / 给我配对码"时调用。无需参数。',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
     output: {
       schema: RESULT_SCHEMA,

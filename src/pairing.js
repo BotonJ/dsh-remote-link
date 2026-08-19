@@ -153,6 +153,15 @@ export function createPairingService(options = {}) {
       return { sid: pairing.sid, nonce, ts, alg: 'HMAC-SHA256' }
     },
 
+    /** Whether the pairing is still redeemable (unconsumed and unexpired).
+     * QR surfaces re-mint on false: a consumed pairing is deleted from the
+     * map immediately even though its TTL has not lapsed. */
+    isLive(sid) {
+      if (typeof sid !== 'string') return false
+      const pairing = pairings.get(sid)
+      return pairing !== undefined && now() < pairing.expiresAt
+    },
+
     async verify(input) {
       pruneStale()
       if (input === null || typeof input !== 'object') return { ok: false, error: 'BAD_REQUEST' }

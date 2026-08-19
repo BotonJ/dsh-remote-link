@@ -60,7 +60,7 @@ dsh plugin --profile web add ./dsh-remote-link     # 本地目录
 | `tunnelHeartbeatFile` | 空 | 隧道连接器心跳文件路径（`scripts/cf-tunnel.sh` 每 30s 写入 epoch 秒）；配置后 `/status` 展示连接器存活年龄 |
 | `hostProbeIntervalMs` | `30000` | 宿主遥测周期：RPC 探针（`/api/host.describe` 全栈健康 + 延迟 + model/会话数）+ host 事件流订阅；非 DSH 上游自动静默；`0` 关闭 |
 | `rateLimit` | 60s 300 次 | 每客户端 IP 固定窗口限速 |
-| `authFailure` | 5min 10 次失败→封禁 5min | 暴力破解阻尼（配对端点另有独立 10/min 桶） |
+| `authFailure` | 5min 10 次失败→封禁 5min | 暴力破解阻尼（配对端点另有独立 10/min 桶）。隧道部署注意：所有隧道用户共享网关侧回环地址这一个计数桶，固定域名会累积互联网扫描噪音——建议把 `max` 调大（如 100），配对模式下无安全损失 |
 
 启动日志直接打印**一次性配对二维码**（ASCII）+ 6 位短码。手机扫码 → 官方 UI 无弹窗打开；扫不了码就在任意设备打开 `http://<IP>:3081/pair` 输短码。
 
