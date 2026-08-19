@@ -20,7 +20,7 @@ import { request } from 'node:http'
 const MAX_INTERESTING_FRAME = 256 * 1024
 const BACKOFF_MS = [1_000, 3_000, 10_000, 30_000]
 
-export function createEventTap({ target, onRequested, onResolved, log = () => {} }) {
+export function createEventTap({ target, onRequested, onResolved, handshakeTimeoutMs = 10_000, log = () => {} }) {
   const state = { connected: false, supported: null, framesSeen: 0, interactionsSeen: 0, lastFrameAt: null }
   let req = null
   let attempt = 0
@@ -48,7 +48,10 @@ export function createEventTap({ target, onRequested, onResolved, log = () => {}
 
   function connect() {
     if (closed || state.supported === false) return
-    req = request({ host: target().host, port: target().port, method: 'GET', path: '/api/events.mux' }, (res) => {
+    // Handshake-only deadline: cleared once headers arrive — an established
+    // mux stream may be legitimately quiet until the next interaction.
+    req = request({ host: target().host, port: target().port, method: 'GET', path: '/api/events.mux', timeout: handshakeTimeoutMs }, (res) => {
+      req.setTimeout(0)
       const isSse = String(res.headers['content-type'] ?? '').includes('text/event-stream')
       if (res.statusCode !== 200 || !isSse) {
         res.resume()
@@ -82,6 +85,7 @@ export function createEventTap({ target, onRequested, onResolved, log = () => {}
       res.on('end', () => { state.connected = false; req = null; schedule() })
       res.on('error', () => { state.connected = false; req = null; schedule() })
     })
+    req.on('timeout', () => req.destroy())
     req.on('error', () => schedule())
     req.end()
   }

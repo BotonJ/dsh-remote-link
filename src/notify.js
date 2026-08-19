@@ -10,10 +10,12 @@
  * failing channel logs and never breaks the others.
  */
 
-export function createNotifier({ barkUrl = '', ntfyUrl = '', webhookUrl = '', fetchImpl = globalThis.fetch?.bind(globalThis), log = () => {} } = {}) {
+export function createNotifier({ barkUrl = '', ntfyUrl = '', webhookUrl = '', fetchImpl = globalThis.fetch?.bind(globalThis), fetchTimeoutMs = 10_000, log = () => {} } = {}) {
+  // A hung push endpoint must not pin sockets/promises forever.
+  const signal = () => AbortSignal.timeout(fetchTimeoutMs)
   const channels = []
   if (barkUrl !== '') channels.push(['bark', async ({ title, body }) => {
-    await fetchImpl(`${barkUrl.replace(/\/$/, '')}/${encodeURIComponent(title)}/${encodeURIComponent(body)}`)
+    await fetchImpl(`${barkUrl.replace(/\/$/, '')}/${encodeURIComponent(title)}/${encodeURIComponent(body)}`, { signal: signal() })
   }])
   if (ntfyUrl !== '') channels.push(['ntfy', async ({ title, body }) => {
     // HTTP header values must be Latin-1 and our titles are CJK, so a
@@ -30,6 +32,7 @@ export function createNotifier({ barkUrl = '', ntfyUrl = '', webhookUrl = '', fe
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ topic, title, message: body }),
+      signal: signal(),
     })
   }])
   if (webhookUrl !== '') channels.push(['webhook', async (payload) => {
@@ -37,6 +40,7 @@ export function createNotifier({ barkUrl = '', ntfyUrl = '', webhookUrl = '', fe
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ ...payload, at: Date.now() }),
+      signal: signal(),
     })
   }])
 

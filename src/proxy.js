@@ -42,6 +42,11 @@ export function proxyRequest(req, res, target, onError, { onResponded } = {}) {
       .split(',').map((token) => token.trim().toLowerCase())
     for (const header of [...HOP_BY_HOP, ...connectionTokens]) delete headers[header]
     res.writeHead(upstreamRes.statusCode, headers)
+    // A dead upstream mid-body surfaces on the RESPONSE stream (aborted +
+    // error); the request itself only ever emits 'close'. Tear the client
+    // down instead of leaving it waiting forever on a half-delivered body.
+    upstreamRes.on('aborted', () => res.destroy())
+    upstreamRes.on('error', () => res.destroy())
     upstreamRes.pipe(res)
   })
   upstream.on('error', (error) => {
@@ -49,11 +54,13 @@ export function proxyRequest(req, res, target, onError, { onResponded } = {}) {
     res.end(`upstream unavailable: ${String(error?.message ?? error)}`)
     onError?.(error)
   })
-  req.on('aborted', () => upstream.destroy())
+  // Client went away (request aborted or response dropped mid-stream): stop
+  // draining the upstream for a peer that can no longer receive it.
+  res.on('close', () => { if (!res.writableEnded) upstream.destroy() })
   req.pipe(upstream)
 }
 
-export function proxyUpgrade(req, socket, head, target, onError, { onEstablished } = {}) {
+export function proxyUpgrade(req, socket, head, target, onError, { onEstablished, handshakeTimeoutMs = 10_000 } = {}) {
   const upstream = request({
     host: target.host,
     port: target.port,
@@ -61,7 +68,18 @@ export function proxyUpgrade(req, socket, head, target, onError, { onEstablished
     path: req.url,
     headers: { ...forwardedHeaders(req, target), connection: 'Upgrade', upgrade: req.headers.upgrade ?? 'websocket' },
   })
+  // Deadline for the 101 handshake only: an upstream that accepts TCP but
+  // never answers would hang the browser's WS connect and the leg forever.
+  // Cleared on establishment — an established leg may be legitimately quiet
+  // for minutes (that is what ws-keepalive exists for).
+  let timedOut = false
+  upstream.setTimeout(handshakeTimeoutMs, () => {
+    timedOut = true
+    upstream.destroy()
+    socket.end('HTTP/1.1 504 Gateway Timeout\r\nConnection: close\r\n\r\n')
+  })
   upstream.on('upgrade', (_upstreamRes, upstreamSocket, upstreamHead) => {
+    upstream.setTimeout(0)
     const headerBlock = Object.entries(_upstreamRes.headers)
       .map(([name, value]) => `${name}: ${Array.isArray(value) ? value.join(', ') : value}\r\n`)
       .join('')
@@ -86,6 +104,7 @@ export function proxyUpgrade(req, socket, head, target, onError, { onEstablished
     upstreamRes.resume()
   })
   upstream.on('error', (error) => {
+    if (timedOut) return // the 504 already told the story
     socket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n')
     onError?.(error)
   })

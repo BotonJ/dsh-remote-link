@@ -44,6 +44,9 @@ function postJson(target, path, body, timeoutMs) {
     }, (res) => {
       const chunks = []
       res.on('data', (c) => chunks.push(c))
+      // A mid-body upstream death emits error on the RESPONSE (the request
+      // only ever sees 'close'): settle the probe instead of hanging it.
+      res.on('error', (e) => resolve({ status: 0, error: String(e?.message ?? e) }))
       res.on('end', () => {
         let parsed = null
         try { parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { /* non-JSON answer */ }
@@ -56,7 +59,7 @@ function postJson(target, path, body, timeoutMs) {
   })
 }
 
-export function createHostProbe({ target, intervalMs = 30_000, probeTimeoutMs = 5_000, log = () => {} }) {
+export function createHostProbe({ target, intervalMs = 30_000, probeTimeoutMs = 5_000, handshakeTimeoutMs = 10_000, log = () => {} }) {
   const enabled = intervalMs > 0
   const state = {
     enabled,
@@ -120,7 +123,10 @@ export function createHostProbe({ target, intervalMs = 30_000, probeTimeoutMs = 
 
   function connectSse() {
     if (closed || state.supported === false) return
-    const req = request({ host: target().host, port: target().port, method: 'GET', path: '/api/events.host' }, (res) => {
+    // Handshake-only deadline: cleared once headers arrive — an established
+    // host event stream may be legitimately quiet for minutes.
+    const req = request({ host: target().host, port: target().port, method: 'GET', path: '/api/events.host', timeout: handshakeTimeoutMs }, (res) => {
+      req.setTimeout(0)
       const isSse = String(res.headers['content-type'] ?? '').includes('text/event-stream')
       if (res.statusCode !== 200 || !isSse) {
         res.resume()
@@ -156,6 +162,7 @@ export function createHostProbe({ target, intervalMs = 30_000, probeTimeoutMs = 
       res.on('end', () => { state.events.connected = false; sseReq = null; scheduleSse() })
       res.on('error', () => { state.events.connected = false; sseReq = null; scheduleSse() })
     })
+    req.on('timeout', () => req.destroy())
     req.on('error', () => scheduleSse())
     req.end()
   }

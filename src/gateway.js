@@ -73,6 +73,7 @@ export function createGateway({
   keepaliveIntervalMs = 25_000, pairingSnapshot = null,
   resolveDevice = null, tunnelHeartbeatFile = null,
   hostProbeIntervalMs = 30_000, notifySnapshot = null,
+  upgradeTimeoutMs = 10_000,
 }) {
   const sockets = new Set()
   const legs = new Map() // leg id → { id, path, connectedAt, keepalive }
@@ -302,6 +303,7 @@ export function createGateway({
     socket.on('close', drop)
     socket.on('error', drop)
     proxyUpgrade(req, socket, head, target(), (error) => recordUpstreamError('upgrade', error), {
+      handshakeTimeoutMs: upgradeTimeoutMs,
       onEstablished: (downSocket, upstreamSocket, upstreamHead) => {
         leg.keepalive = attachLinkKeepalive(downSocket, upstreamSocket, {
           intervalMs: keepaliveIntervalMs,
