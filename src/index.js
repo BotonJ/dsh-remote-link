@@ -28,6 +28,8 @@ import { PAIRING_PAGE_HTML } from './pairing-page.js'
 import { defineForkSessionTool } from './fork-session.js'
 import { defineRemoteQrTool, defineRemoteDevicesTool } from './tools.js'
 import { encodeQr, renderQr, renderPng } from './qrcode.js'
+import { createNotifier } from './notify.js'
+import { createEventTap } from './event-tap.js'
 
 export const name = 'dsh-remote-link'
 export const inject = ['tools']
@@ -64,6 +66,7 @@ export function apply(ctx, config) {
       ttlMs: cfg.pairing.ttlMs,
       sessionMaxAgeMs: cfg.pairing.sessionMaxAgeDays * 86_400_000,
       deviceIdleExpiryMs: cfg.pairing.deviceIdleExpiryDays * 86_400_000,
+      recoveryCode: cfg.pairing.recoveryCode,
       ...(cfg.pairing.devicesFile === null ? {} : { devicesFile: cfg.pairing.devicesFile }),
     })
     : null
@@ -85,6 +88,41 @@ export function apply(ctx, config) {
     }
     return currentPairing
   }
+
+  // Offline interaction push: when an approval/question arrives and no
+  // browser leg is connected to see it, ring the user's own channels
+  // (Bark/ntfy/webhook). Payload carries no secrets; per-id dedupe plus a
+  // global cooldown keep it a doorbell, not a fire alarm.
+  const notifier = createNotifier({ ...cfg.notify, log })
+  let lastPushAt = null
+  let lastPushCooldownUntil = 0
+  const PUSH_COOLDOWN_MS = 60_000
+  const pushedIds = new Set()
+  const eventTap = notifier.enabled
+    ? createEventTap({
+      target,
+      log,
+      onRequested: ({ kind, id }) => {
+        if (gateway.activeLegCount() > 0) return // a connected browser sees it live
+        const key = `${kind}:${id}`
+        if (pushedIds.has(key)) return
+        const t = Date.now()
+        if (t < lastPushCooldownUntil) return
+        pushedIds.add(key)
+        lastPushAt = t
+        lastPushCooldownUntil = t + PUSH_COOLDOWN_MS
+        notifier.notify({
+          title: kind === 'approval' ? 'DSH 等待审批' : 'DSH 等待回答',
+          body: `宿主机 agent 正在等你${kind === 'approval' ? '批准操作' : '回答问题'}——打开远程页面处理。`,
+        }).catch(() => {})
+      },
+      onResolved: () => {
+        // Frames do not reliably carry the same id on resolve; dropping the
+        // whole set on any resolution keeps the dedupe bounded and simple.
+        pushedIds.clear()
+      },
+    })
+    : null
 
   const gateway = createGateway({
     auth: createAuthenticator({
@@ -117,6 +155,9 @@ export function apply(ctx, config) {
     keepaliveIntervalMs: cfg.keepaliveIntervalMs,
     tunnelHeartbeatFile: cfg.tunnelHeartbeatFile,
     hostProbeIntervalMs: cfg.hostProbeIntervalMs,
+    notifySnapshot: notifier.enabled
+      ? () => ({ channels: notifier.channelNames(), lastPushAt, tap: eventTap.state() })
+      : null,
     pairingSnapshot: pairingService === null
       ? null
       : () => (currentPairing === null ? null : { shortCode: currentPairing.shortCode, expiresAt: currentPairing.expiresAt }),
@@ -172,6 +213,11 @@ export function apply(ctx, config) {
         }
         log(`gateway on ${cfg.host}:${gateway.port} → ${target().host}:${target().port}`)
         log(`link keepalive ${cfg.keepaliveIntervalMs > 0 ? `every ${Math.round(cfg.keepaliveIntervalMs / 1000)}s when idle` : 'off'} · status: http://127.0.0.1:${gateway.port}/status`)
+        if (pairingService !== null && cfg.pairing.recoveryCode !== null) log('recovery pairing enabled (long-term code configured)')
+        if (eventTap !== null) {
+          eventTap.start()
+          log(`interaction push on idle: ${notifier.channelNames().join(', ')}`)
+        }
         if (pairingService !== null) {
           const pairing = currentOrMint()
           const url = pairingUrl(pairing)
@@ -195,6 +241,7 @@ export function apply(ctx, config) {
 
   ctx.effect(() => () => {
     gateway.close()
+    eventTap?.close()
     advertiser?.stop()
   })
 }

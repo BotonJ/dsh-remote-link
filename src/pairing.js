@@ -60,9 +60,16 @@ export function createPairingService(options = {}) {
     ttlMs = 300_000,
     sessionMaxAgeMs = 30 * 86_400_000,
     deviceIdleExpiryMs = 90 * 86_400_000,
+    recoveryCode = null,
     exists = existsSync,
   } = options
   void exists
+  // The long-term recovery code (case "no paired device at hand"): stored as
+  // a SHA-256 digest only, compared constant-time, redeemable repeatedly —
+  // each redemption registers a fresh revocable device in the registry.
+  const recoveryHash = typeof recoveryCode === 'string' && recoveryCode.length > 0
+    ? sha256Hex(recoveryCode)
+    : null
 
   /** sid/secret → pairing, live until consumed or expired */
   const pairings = new Map() // sid → { sid, secret, shortCode, expiresAt }
@@ -165,6 +172,37 @@ export function createPairingService(options = {}) {
         addedAt: t,
         lastSeen: t,
         deviceKey: Buffer.from(hkdfSync('sha256', Buffer.from(secret, 'utf8'), Buffer.from(pairing.sid, 'utf8'), Buffer.from('rl-device'), 32)).toString('hex'),
+      }
+      devices = [...devices, device]
+      store.save(devices)
+      const sessionToken = B64URL.encode(random())
+      sessions.set(sha256Hex(sessionToken), { deviceId, expiresAt: t + sessionMaxAgeMs })
+      return { ok: true, deviceId, sessionToken }
+    },
+
+    /** Redeem the long-term recovery code: mints a device + session like a
+     * completed pairing. Not one-shot — treat the code like a password and
+     * rotate it via config; every redemption shows up in listDevices(). */
+    async redeemRecovery(input) {
+      pruneStale()
+      if (recoveryHash === null) return { ok: false, error: 'RECOVERY_DISABLED' }
+      if (input === null || typeof input !== 'object' || typeof input.code !== 'string' || input.code.length === 0) {
+        return { ok: false, error: 'BAD_REQUEST' }
+      }
+      if (!constantTimeEqualHex(sha256Hex(input.code), recoveryHash)) {
+        return { ok: false, error: 'BAD_RECOVERY' }
+      }
+      const t = now()
+      const deviceId = B64URL.encode(random().subarray(0, 12))
+      const name = typeof input.name === 'string' && input.name.length > 0 && input.name.length <= 64
+        ? input.name
+        : `recovery-${new Date(t).toISOString().slice(0, 10)}`
+      const device = {
+        deviceId,
+        name,
+        addedAt: t,
+        lastSeen: t,
+        deviceKey: Buffer.from(hkdfSync('sha256', Buffer.from(input.code, 'utf8'), Buffer.from('rl-recovery', 'utf8'), Buffer.from(deviceId, 'utf8'), 32)).toString('hex'),
       }
       devices = [...devices, device]
       store.save(devices)

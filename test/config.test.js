@@ -61,9 +61,9 @@ test('rejects invalid hosts and non-string credentials', () => {
 
 test('pairing defaults: enabled, 5min TTL, 30d sessions, 90d device idle expiry', () => {
   const cfg = normalizeConfig({ password: 'x' })
-  assert.deepEqual(cfg.pairing, { enabled: true, ttlMs: 300_000, sessionMaxAgeDays: 30, deviceIdleExpiryDays: 90, devicesFile: null })
+  assert.deepEqual(cfg.pairing, { enabled: true, ttlMs: 300_000, sessionMaxAgeDays: 30, deviceIdleExpiryDays: 90, devicesFile: null, recoveryCode: null })
   const custom = normalizeConfig({ password: 'x', pairing: { enabled: false, ttlMs: 60_000 } })
-  assert.deepEqual(custom.pairing, { enabled: false, ttlMs: 60_000, sessionMaxAgeDays: 30, deviceIdleExpiryDays: 90, devicesFile: null })
+  assert.deepEqual(custom.pairing, { enabled: false, ttlMs: 60_000, sessionMaxAgeDays: 30, deviceIdleExpiryDays: 90, devicesFile: null, recoveryCode: null })
   assert.throws(() => normalizeConfig({ password: 'x', pairing: { ttlMs: 0 } }), { code: 'E_CONFIG' })
   assert.throws(() => normalizeConfig({ password: 'x', pairing: { bogus: 1 } }), { code: 'E_CONFIG' })
 })

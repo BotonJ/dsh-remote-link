@@ -64,7 +64,7 @@ export function createGateway({
   qrImage = null, qrPage = null,
   keepaliveIntervalMs = 25_000, pairingSnapshot = null,
   resolveDevice = null, tunnelHeartbeatFile = null,
-  hostProbeIntervalMs = 30_000,
+  hostProbeIntervalMs = 30_000, notifySnapshot = null,
 }) {
   const sockets = new Set()
   const legs = new Map() // leg id → { id, path, connectedAt, keepalive }
@@ -81,7 +81,7 @@ export function createGateway({
   function handlePairingRoute(req, res) {
     if (pairing === null && req.url.split('?', 1)[0] !== '/status' && req.url.split('?', 1)[0] !== '/status.json') return false
     const path = req.url.split('?', 1)[0]
-    if (path !== '/pair' && path !== '/pair/' && path !== '/pair/challenge' && path !== '/pair/verify' && path !== '/qr.png' && path !== '/qr' && path !== '/status' && path !== '/status.json') return false
+    if (path !== '/pair' && path !== '/pair/' && path !== '/pair/challenge' && path !== '/pair/verify' && path !== '/pair/recover' && path !== '/qr.png' && path !== '/qr' && path !== '/status' && path !== '/status.json') return false
 
     // Local-only observability surface: same fence as the QR image — loopback
     // source AND no proxy chain, so tunneled clients never see link telemetry.
@@ -154,13 +154,14 @@ export function createGateway({
       jsonResponse(res, challenge === null ? 404 : 200, challenge ?? { error: 'PAIRING_NOT_FOUND' })
       return true
     }
-    // /pair/verify
+    // /pair/verify and /pair/recover — both mint device cookies.
     readBody(req, 4096)
       .then((text) => {
         let body = null
         try { body = JSON.parse(text) } catch { /* handled below */ }
         if (body === null || typeof body !== 'object') return jsonResponse(res, 400, { error: 'BAD_REQUEST' })
-        return pairing.verify(body).then((result) => {
+        const outcome = path === '/pair/recover' ? pairing.redeemRecovery(body) : pairing.verify(body)
+        return Promise.resolve(outcome).then((result) => {
           if (result.ok !== true) return jsonResponse(res, 401, { error: result.error })
           jsonResponse(res, 200, { deviceId: result.deviceId }, {
             'set-cookie': `${SESSION_COOKIE}=${result.sessionToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${cookieMaxAgeSeconds}`,
@@ -224,6 +225,7 @@ export function createGateway({
       },
       host: hostProbe.state(),
       tunnel,
+      notify: notifySnapshot?.() ?? null,
       pairing: pairingInfo === null ? null : {
         shortCode: pairingInfo.shortCode,
         secondsLeft: Math.max(0, Math.round((pairingInfo.expiresAt - now) / 1000)),
@@ -323,6 +325,11 @@ export function createGateway({
     },
     get port() {
       return server === null ? null : server.address()?.port ?? null
+    },
+    /** Live WS legs (phone/desktop browsers). Drives the offline-notify
+     * policy: interactions with nobody connected are worth a push. */
+    activeLegCount() {
+      return legs.size
     },
     close() {
       hostProbe.close()

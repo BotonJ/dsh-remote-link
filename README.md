@@ -12,6 +12,8 @@
 
 **v1.6.3：宿主遥测**——`/status` 的"上游健康"从"HTTP 服务器活着"升级到"DSH 全栈活着"：网关以官方客户端同款信封调用 `/api/host.describe`（必须穿过 webserver → ApiProxy → 宿主才能返回，顺带量出 RPC 延迟、取回 model/版本/会话数），并订阅 `/api/events.host` 事件流实时跟踪 agent 忙闲。非 DSH 上游（如 MiMo，其兜底 UI 路由对一切路径回 200 HTML）会被形状判定自动识别并静默，不产生噪音。
 
+**v1.7 候选已实现（待审核）：审批离线推送 + 长期恢复码**——① `notify` 配置 Bark/ntfy/webhook：agent 等待审批/回答且**无任何已连接浏览器**时推一条"该去处理了"的门铃（仅通知不含任何秘密，按 ID 去重 + 60s 冷却；有浏览器在线则静默）；② `pairing.recoveryCode`：所有设备丢失时用长期恢复码在 `/pair` 页自助恢复接入（SHA-256 摘要常时比较，每次恢复注册为可吊销设备，≥16 字符熵下限）。
+
 **v1.5：QR 一次性配对 + HMAC 挑战-响应 + HttpOnly Cookie 会话 + 设备注册表**（v1 的 `?token=` 明文折衷已删除，设计见 `docs/PAIRING-DESIGN.md`）。
 
 ```
@@ -47,6 +49,10 @@ dsh plugin --profile web add ./dsh-remote-link     # 本地目录
 | `pairing.sessionMaxAgeDays` | `30` | cookie 会话最长寿命 |
 | `pairing.deviceIdleExpiryDays` | `90` | 设备闲置自动出局 |
 | `pairing.devicesFile` | `$DSH_HOME/remote-link/devices.json` | 设备注册表（0600） |
+| `pairing.recoveryCode` | 空 | 长期恢复码（≥16 字符，如 `openssl rand -base64 18`）：所有设备丢失时在 `/pair` 页自助恢复；每次恢复注册为可吊销设备；建议打印离线保存、按密码对待 |
+| `notify.barkUrl` | 空 | Bark 推送地址（`https://api.day.app/<你的KEY>`） |
+| `notify.ntfyUrl` | 空 | ntfy 主题地址（`https://ntfy.sh/<私有主题>` 或自建） |
+| `notify.webhookUrl` | 空 | 通用 webhook（POST `{title, body, at}` JSON） |
 | `targetHost` / `targetPort` | `127.0.0.1` / 自动 | 反代目标；默认取宿主 webserver 实际端口 |
 | `mdns` | `true` | 非 loopback 绑定时广播 `_http._tcp`（TXT 标注 `auth=pairing|basic`） |
 | `publicUrl` | 空 | 二维码/短码的公开基础地址（如 `https://xxx.trycloudflare.com`）；手机走流量/外网时必填，否则二维码指向局域网 IP 不可达 |

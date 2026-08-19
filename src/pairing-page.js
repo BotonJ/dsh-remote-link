@@ -103,11 +103,29 @@ export const PAIRING_PAGE_HTML = `<!doctype html>
   <p>无法扫码？输入桌面端显示的 6 位短码：</p>
   <input id="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off">
   <button onclick="pairWithCode()">配对</button>
+  <p style="margin-top:24px">设备全部丢失？输入长期恢复码（在宿主机 cordis.yml 的 pairing.recoveryCode 配置）：</p>
+  <input id="rcode" style="width:100%;letter-spacing:1px;font-size:16px;text-align:left" autocomplete="off" placeholder="recovery code">
+  <button style="margin-top:8px" onclick="pairWithRecovery()">恢复接入</button>
 </div>
 <script>
 ${HMAC_SHA256_JS}
 var statusEl = document.getElementById('status')
 function fail(msg) { statusEl.textContent = msg; statusEl.className = 'err' }
+
+async function pairWithRecovery() {
+  var code = document.getElementById('rcode').value.trim()
+  if (code.length < 8) { fail('恢复码太短'); return }
+  statusEl.className = ''; statusEl.textContent = '正在验证恢复码…'
+  try {
+    var res = await fetch('/pair/recover', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: code, name: navigator.userAgent.slice(0, 64) })
+    })
+    if (res.ok) { statusEl.textContent = '恢复成功，正在进入…'; location.href = '/' }
+    else { fail('恢复被拒绝（' + (await res.text()) + '）——检查恢复码是否正确/已启用') }
+  } catch (e) { fail('网络错误：' + e) }
+}
 
 async function pair(queryValue, isCode, secret) {
   try {

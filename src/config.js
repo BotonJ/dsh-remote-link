@@ -93,10 +93,26 @@ export function normalizeConfig(raw) {
     ? 30_000
     : intInRange(input.hostProbeIntervalMs, 'hostProbeIntervalMs', 0, 3_600_000)
 
-  const pairing = section(input.pairing, { enabled: true, ttlMs: 300_000, sessionMaxAgeDays: 30, deviceIdleExpiryDays: 90, devicesFile: null }, ['ttlMs', 'sessionMaxAgeDays', 'deviceIdleExpiryDays'])
+  const pairing = section(input.pairing, { enabled: true, ttlMs: 300_000, sessionMaxAgeDays: 30, deviceIdleExpiryDays: 90, devicesFile: null, recoveryCode: null }, ['ttlMs', 'sessionMaxAgeDays', 'deviceIdleExpiryDays'])
   if (typeof pairing.enabled !== 'boolean') throw new ConfigError('config.pairing.enabled must be a boolean')
   if (pairing.devicesFile !== null && typeof pairing.devicesFile !== 'string') {
     throw new ConfigError('config.pairing.devicesFile must be a string path or null')
+  }
+  // The recovery code is a long-lived shared secret: enforce an entropy
+  // floor so it cannot be brute-forced through the rate-limited endpoint.
+  if (typeof pairing.recoveryCode === 'string' && pairing.recoveryCode.length > 0 && pairing.recoveryCode.length < 16) {
+    throw new ConfigError('config.pairing.recoveryCode must be at least 16 characters (generate e.g. `openssl rand -base64 18`)')
+  }
+  if (pairing.recoveryCode === '') pairing.recoveryCode = null
+
+  // Offline interaction push (approval/question waiting with nobody
+  // connected): best-effort notification channels, never carrying secrets.
+  const notify = section(input.notify, { barkUrl: '', ntfyUrl: '', webhookUrl: '' }, [])
+  for (const field of ['barkUrl', 'ntfyUrl', 'webhookUrl']) {
+    if (typeof notify[field] !== 'string') throw new ConfigError(`config.notify.${field} must be a string URL or empty`)
+    if (notify[field] !== '' && !/^https?:\/\//.test(notify[field])) {
+      throw new ConfigError(`config.notify.${field} must start with http:// or https://`)
+    }
   }
 
   // Security baseline: the gateway proxies a full remote-control surface, so
@@ -130,5 +146,6 @@ export function normalizeConfig(raw) {
     rateLimit: Object.freeze(section(input.rateLimit, { windowMs: 60_000, max: 300 }, ['windowMs', 'max'])),
     authFailure: Object.freeze(section(input.authFailure, { windowMs: 300_000, max: 10, banMs: 300_000 }, ['windowMs', 'max', 'banMs'])),
     pairing: Object.freeze(pairing),
+    notify: Object.freeze(notify),
   })
 }
