@@ -87,6 +87,15 @@ test('cookie-only mode: no password, pairing sessions carry the gate', () => {
   assert.equal(auth.check(req({})).ok, false)
 })
 
+test('cookie-only mode: Basic headers are rejected, including the empty-password form (P0 regression)', () => {
+  const auth = createAuthenticator({ username: 'dsh', password: '', cookieAuth: true, resolveSession: () => null })
+  const b64 = (s) => `Basic ${Buffer.from(s).toString('base64')}`
+  // base64("dsh:") — before the fix this matched the empty configured password
+  assert.equal(auth.check(req({ authorization: b64('dsh:') })).ok, false)
+  assert.equal(auth.check(req({ authorization: b64('dsh:anything') })).ok, false)
+  assert.equal(auth.check(req({ authorization: b64('dsh:') , cookie: 'rls=stale' })).ok, false)
+})
+
 test('query token no longer authenticates (removed in v1.5)', () => {
   const auth = createAuthenticator({ username: 'dsh', password: 's3cret' })
   assert.equal(auth.check(req({ url: '/?token=s3cret' })).ok, false)

@@ -16,7 +16,21 @@ export function createNotifier({ barkUrl = '', ntfyUrl = '', webhookUrl = '', fe
     await fetchImpl(`${barkUrl.replace(/\/$/, '')}/${encodeURIComponent(title)}/${encodeURIComponent(body)}`)
   }])
   if (ntfyUrl !== '') channels.push(['ntfy', async ({ title, body }) => {
-    await fetchImpl(ntfyUrl, { method: 'POST', headers: { title }, body })
+    // HTTP header values must be Latin-1 and our titles are CJK, so a
+    // `title` header makes fetch throw ("Cannot convert argument to a
+    // ByteString") on every push. Use the documented JSON publishing route
+    // instead: POST {topic, title, message} to the service root derived from
+    // the configured topic URL (supports self-hosted subpath deployments and
+    // keeps any query params such as access tokens).
+    const url = new URL(ntfyUrl)
+    const segments = url.pathname.split('/').filter(Boolean)
+    const topic = segments.pop() ?? ''
+    url.pathname = segments.length === 0 ? '/' : `/${segments.join('/')}/`
+    await fetchImpl(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ topic, title, message: body }),
+    })
   }])
   if (webhookUrl !== '') channels.push(['webhook', async (payload) => {
     await fetchImpl(webhookUrl, {

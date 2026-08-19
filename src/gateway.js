@@ -24,6 +24,14 @@ import { STATUS_PAGE_HTML } from './status-page.js'
 const REALM = 'dsh-remote-link'
 const LOOPBACK = /^(127\.0\.0\.1|::1|localhost)$/
 
+// stats() shape for legs whose upgrade never established (upstream refused or
+// errored before 101): the status page reads these fields without null checks.
+const DEAD_LEG_KEEPALIVE = {
+  enabled: false, attachedAt: null, pingsSent: 0, pongsReceived: 0, lastPongAt: null,
+  lastRttMs: null, worstRttMs: null, desynced: false, evicted: false, idleMs: 0,
+  framesDown: 0, framesUp: 0,
+}
+
 function clientIp(req) {
   const raw = req.socket?.remoteAddress ?? 'unknown'
   return raw.startsWith('::ffff:') ? raw.slice(7) : raw
@@ -216,7 +224,7 @@ export function createGateway({
         deviceName: leg.deviceName,
         connectedAt: leg.connectedAt,
         ageMs: now - leg.connectedAt,
-        keepalive: leg.keepalive.stats(),
+        keepalive: leg.keepalive === null ? { ...DEAD_LEG_KEEPALIVE } : leg.keepalive.stats(),
       })),
       upstream: {
         target: target(),
@@ -286,6 +294,13 @@ export function createGateway({
       keepalive: null,
     }
     legs.set(legId, leg)
+    // Teardown must not depend on establishment: an upstream that refuses the
+    // upgrade (plain response) or errors mid-handshake never reaches
+    // onEstablished, and this leg would otherwise leak forever — with
+    // keepalive null it would also crash statusSnapshot on the next poll.
+    const drop = () => { legs.delete(legId); leg.keepalive?.dispose() }
+    socket.on('close', drop)
+    socket.on('error', drop)
     proxyUpgrade(req, socket, head, target(), (error) => recordUpstreamError('upgrade', error), {
       onEstablished: (downSocket, upstreamSocket, upstreamHead) => {
         leg.keepalive = attachLinkKeepalive(downSocket, upstreamSocket, {
@@ -294,9 +309,6 @@ export function createGateway({
           seedUp: upstreamHead,
           log,
         })
-        const drop = () => { legs.delete(legId); leg.keepalive?.dispose() }
-        downSocket.on('close', drop)
-        downSocket.on('error', drop)
         return drop
       },
     })

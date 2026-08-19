@@ -105,6 +105,64 @@ test('unauthenticated requests get 401 with a Basic challenge; credentials pass 
   }
 })
 
+test('default pairing mode: a credentialless Basic header (base64 "dsh:") never passes the gate (P0 regression)', async () => {
+  const upstream = await startUpstream()
+  const service = pairingService()
+  // The shipped default: pairing on, NO Basic password — Basic must be inert.
+  const gw = await startGateway(upstream, {
+    pairing: service,
+    auth: createAuthenticator({
+      username: 'dsh', password: '', cookieAuth: true,
+      resolveSession: (t) => service.resolveSession(t),
+    }),
+  })
+  try {
+    const bypass = await fetch(`http://127.0.0.1:${gw.port}/api/anything`, { headers: { authorization: basic('dsh', '') } })
+    assert.equal(bypass.status, 401, 'empty-password Basic must not authenticate when no password is configured')
+    assert.equal(bypass.headers.get('www-authenticate'), null, 'cookie-only mode must not advertise Basic')
+  } finally {
+    await Promise.all([gw.close(), closeServer(upstream)])
+  }
+})
+
+test('a refused WS upgrade does not crash /status; the leg is cleaned up on close (P1 regression)', async () => {
+  // No 'upgrade' handler: every request — upgrade attempts included — gets a
+  // plain 200, so proxyUpgrade takes the pass-the-verdict path and never
+  // reaches onEstablished. The leg must not leak nor crash the status page.
+  const plain = createServer((req, res) => res.writeHead(200, { 'content-type': 'text/html' }).end('<html>ui</html>'))
+  const upstream = await new Promise((resolve) => {
+    plain.listen(0, '127.0.0.1', () => resolve({ server: plain, port: plain.address().port, upgradedSockets: new Set() }))
+  })
+  const gw = await startGateway(upstream)
+  try {
+    assert.equal((await fetch(`http://127.0.0.1:${gw.port}/status.json`)).status, 200)
+
+    const socket = tcpConnect(gw.port, '127.0.0.1')
+    const verdict = new Promise((resolve) => socket.on('data', (c) => resolve(String(c))))
+    socket.on('connect', () => {
+      socket.write(`GET /api/events.mux HTTP/1.1\r\nHost: 127.0.0.1:${gw.port}\r\nAuthorization: ${basic('dsh', 's3cret')}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`)
+    })
+    assert.match(await verdict, /200/)
+
+    // The refused leg is still registered (socket not yet closed): /status
+    // must survive it — keepalive is null until establishment.
+    const mid = await fetch(`http://127.0.0.1:${gw.port}/status.json`)
+    assert.equal(mid.status, 200)
+    const midBody = await mid.json()
+    assert.equal(midBody.legs.length, 1)
+    assert.equal(midBody.legs[0].keepalive.enabled, false, 'unestablished leg reports disabled keepalive')
+
+    socket.destroy()
+    await new Promise((r) => setTimeout(r, 50))
+    const after = await fetch(`http://127.0.0.1:${gw.port}/status.json`)
+    assert.equal(after.status, 200)
+    assert.equal((await after.json()).legs.length, 0, 'leg removed once its socket closes')
+    assert.equal(gw.activeLegCount(), 0)
+  } finally {
+    await Promise.all([gw.close(), closeServer(upstream)])
+  }
+})
+
 test('GET /pair serves the pairing page without authentication', async () => {
   const upstream = await startUpstream()
   const service = pairingService()

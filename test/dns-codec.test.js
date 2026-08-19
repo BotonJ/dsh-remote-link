@@ -58,6 +58,31 @@ test('parseQuery follows compression pointers in question names', () => {
   assert.equal(query.questions[1].name, 'dsh._http._tcp.local', 'pointer resolved to the same name')
 })
 
+test('readName enforces the RFC 1035 255-octet cap: over-long label runs are rejected', () => {
+  const overLong = Buffer.concat([
+    Buffer.from([0x12, 0x34, 0x00, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]),
+    Buffer.concat(Array.from({ length: 300 }, () => Buffer.from([1, 0x61]))), // 300 one-byte labels = 600 octets
+    Buffer.from([0]),
+    Buffer.from([0x00, 0x0c, 0x00, 0x01]),
+  ])
+  assert.equal(parseQuery(overLong), null)
+})
+
+test('readName caps pointer-amplified names: a label run + back-pointer cannot re-traverse (CPU guard)', () => {
+  // 120 one-byte labels (240 octets, under the cap) terminated not by the root
+  // label but by a compression pointer back to the name start. Before the cap
+  // each of the 32 allowed hops re-pushed the whole run; now the accumulated
+  // name crosses 255 octets on the second pass and the parse fails fast.
+  const run = Buffer.concat(Array.from({ length: 120 }, () => Buffer.from([1, 0x61])))
+  const packet = Buffer.concat([
+    Buffer.from([0x12, 0x34, 0x00, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]),
+    run,
+    Buffer.from([0xc0, 0x0c]), // pointer → offset 12 (the run start)
+    Buffer.from([0x00, 0x0c, 0x00, 0x01]),
+  ])
+  assert.equal(parseQuery(packet), null)
+})
+
 test('PTR/A/TXT/SRV answers roundtrip through buildResponse and parseResponse', () => {
   const packet = buildQueryPacket({ id: 0x0042, name: 'dsh._http._tcp.local', type: TYPE.PTR })
   const query = parseQuery(packet)

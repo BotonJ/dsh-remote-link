@@ -57,10 +57,14 @@ export function createAuthenticator({ username, password, cookieAuth = false, re
   return {
     required,
     basicEnabled,
-    check(req) {
+      check(req) {
       if (!required) return { ok: true, via: 'none' }
       const basic = parseBasicAuth(req.headers?.authorization)
-      if (basic !== null) {
+      // Only honor Basic when a password is actually configured: in the
+      // default cookie-only mode (pairing on, password '') the comparison
+      // below would otherwise match `username:` with the empty configured
+      // password and let a credentialless Basic header through the gate.
+      if (basicEnabled && basic !== null) {
         const ok = safeEqual(basic.username, username) && safeEqual(basic.password, password)
         return { ok, via: 'basic' }
       }

@@ -11,6 +11,11 @@ export const TYPE = Object.freeze({ A: 1, PTR: 12, TXT: 16, SRV: 33 })
 
 const CLASS_IN = 1
 const MAX_LABEL = 63
+// RFC 1035 §4.1.4: a domain name is at most 255 octets. Without this cap a
+// crafted query (long label run + compression pointer back into it) makes the
+// pointer hops re-traverse the whole run, burning ~1ms of event-loop CPU per
+// kilobyte of packet — a cheap remote stall against the gateway process.
+const MAX_NAME_BYTES = 255
 const MAX_TXT_STRING = 255
 
 export function encodeName(name) {
@@ -36,6 +41,7 @@ function readName(buf, offset) {
   let jumped = false
   let next = -1
   let hops = 0
+  let nameBytes = 0
   for (;;) {
     if (pos >= buf.length) return null
     const length = buf[pos]
@@ -52,6 +58,8 @@ function readName(buf, offset) {
       continue
     }
     if (length > MAX_LABEL || pos + 1 + length > buf.length) return null
+    nameBytes += 1 + length
+    if (nameBytes > MAX_NAME_BYTES) return null
     labels.push(buf.subarray(pos + 1, pos + 1 + length).toString('utf8'))
     pos += 1 + length
   }

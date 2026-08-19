@@ -85,10 +85,36 @@ test('notifier: fans out to all channels, swallows failures', async () => {
   await notifier.notify({ title: 'DSH 等待审批', body: '打开远程页面处理。' })
   assert.equal(calls.length, 3)
   assert.match(calls[0].url, /api\.day\.app\/KEY\/DSH%20%E7%AD%89%E5%BE%85%E5%AE%A1%E6%89%B9\//)
-  assert.equal(calls[1].url, 'https://ntfy.example/my-topic')
-  assert.equal(calls[1].init.headers.title, 'DSH 等待审批')
+  // ntfy: JSON publish to the service root — the title rides in the UTF-8
+  // body, never in a Latin-1-constrained header.
+  assert.equal(String(calls[1].url), 'https://ntfy.example/')
+  assert.equal(calls[1].init.headers['content-type'], 'application/json')
+  assert.deepEqual(JSON.parse(calls[1].init.body), { topic: 'my-topic', title: 'DSH 等待审批', message: '打开远程页面处理。' })
   assert.equal(calls[2].init.method, 'POST')
   assert.equal(notifier.enabled, true)
+})
+
+test('notifier: ntfy publishes as JSON so CJK titles never enter HTTP headers (real fetch)', async () => {
+  // The old `headers: { title }` path threw "Cannot convert argument to a
+  // ByteString" on every CJK push — exercise real fetch to lock the fix in.
+  const received = []
+  const server = createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => { body += c })
+    req.on('end', () => { received.push({ url: req.url, contentType: req.headers['content-type'], body }); res.writeHead(200).end() })
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  try {
+    const notifier = createNotifier({ ntfyUrl: `http://127.0.0.1:${server.address().port}/base/my-topic`, log: () => {} })
+    await notifier.notify({ title: 'DSH 等待审批', body: '打开远程页面处理。' })
+    assert.equal(received.length, 1)
+    assert.equal(received[0].url, '/base/', 'JSON publish goes to the service root')
+    assert.equal(received[0].contentType, 'application/json')
+    assert.deepEqual(JSON.parse(received[0].body), { topic: 'my-topic', title: 'DSH 等待审批', message: '打开远程页面处理。' })
+  } finally {
+    server.closeAllConnections?.()
+    await new Promise((r) => server.close(r))
+  }
 })
 
 // ---------- event tap + end-to-end push policy through the gateway ----------
